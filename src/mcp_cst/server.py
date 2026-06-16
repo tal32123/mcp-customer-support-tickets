@@ -10,9 +10,13 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 from typing_extensions import Annotated
 
-from .config import Config
+from .config import Config, LlmProvider
 from .data.ingest import build_store_from_huggingface
 from .data.store import TicketStore
+from .errors import ErrorCode, McpCstError
+from .llm.anthropic_client import AnthropicClient
+from .llm.openai_client import OpenAIClient
+from .prompts import draft_reply as draft_reply_module
 from .resources import schema as schema_module
 from .resources import ticket as ticket_module
 from .tools import aggregate_tickets as aggregate_tickets_module
@@ -130,6 +134,31 @@ def aggregate_tickets(
         get_store(),
         group_by=group_by, queue=queue, priority=priority, language=language,
         type=type, tags=tags, tags_mode=tags_mode,
+    )
+
+
+# --- draft_reply prompt --------------------------------------------------
+
+def _llm_client():
+    cfg = get_config()
+    if cfg.llm_provider is LlmProvider.ANTHROPIC:
+        return AnthropicClient(model=cfg.anthropic_model)
+    if cfg.llm_provider is LlmProvider.OPENAI:
+        return OpenAIClient(model=cfg.openai_model)
+    raise McpCstError(
+        ErrorCode.NO_LLM_CONFIGURED,
+        "draft_reply needs ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment",
+    )
+
+
+@mcp.prompt(description=draft_reply_module.DESCRIPTION)
+def draft_reply(
+    ticket_id: Annotated[str, Field(description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft.")],
+    target_language: Annotated[str | None, Field(description="Language to write the draft in. Defaults to the ticket's own language field.")] = None,
+) -> dict:
+    return draft_reply_module.draft_reply_impl(
+        get_store(), _embedder(), _llm_client(),
+        ticket_id=ticket_id, target_language=target_language,
     )
 
 
