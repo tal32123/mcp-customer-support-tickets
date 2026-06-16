@@ -11,6 +11,11 @@ from ..errors import ErrorCode, McpCstError
 GROUP_BY_FIELDS = {"queue", "priority", "language", "type", "tags"}
 FILTER_SCALAR_FIELDS = {"queue", "priority", "language", "type"}
 
+# Columns aggregation actually needs. Skipping `vector` (62k * 384 floats =
+# ~95MB) and other unused columns keeps memory + Arrow->Polars conversion
+# bounded on the full 62k corpus.
+_AGG_COLUMNS = ["id", "queue", "priority", "language", "type", "tags"]
+
 
 def _apply_filters(df: pl.DataFrame, filters: dict) -> pl.DataFrame:
     tags = filters.get("tags")
@@ -44,7 +49,9 @@ def group_count(store: TicketStore, *, group_by: str, filters: dict) -> list[dic
             f"group_by must be one of {sorted(GROUP_BY_FIELDS)}, got {group_by!r}",
         )
 
-    arr = store.table.to_arrow()
+    # `search().select(cols).to_arrow()` is LanceDB's column-projection
+    # path -- skips reading the 384-dim `vector` column from disk.
+    arr = store.table.search().select(_AGG_COLUMNS).to_arrow()
     df = pl.from_arrow(arr)
     df = _apply_filters(df, filters)
 
