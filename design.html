@@ -747,11 +747,11 @@ flowchart TB
         <tr><td><strong>Remote transport (Streamable HTTP) + OAuth 2.1</strong></td><td>Multiple users, single shared index; resource-server pattern with audience-bound tokens.</td></tr>
         <tr><td><strong>Replace the static dataset with a live source</strong></td><td>Plug into the real ticketing system. Periodic re-index instead of revision-pin.</td></tr>
         <tr><td><strong>Reranker on by default</strong></td><td>+5–15% precision pays off when results feed real workflows.</td></tr>
-        <tr><td><strong>PII redaction</strong></td><td>Presidio NER pass on egress for email / phone / IBAN / names.</td></tr>
+        <tr><td><strong>PII redaction</strong></td><td>Egress filter for email / phone / IBAN / names.</td></tr>
         <tr><td><strong>Multi-tenant data isolation</strong></td><td>Tenant id flows through every query; vector index partitioned by tenant.</td></tr>
         <tr><td><strong>Eval harness</strong></td><td>50–200 golden queries with expected ticket IDs; precision@5 tracked on every deploy.</td></tr>
         <tr><td><strong>Observability</strong></td><td>Structured logs, traces, p95 latency dashboards, retrieval-quality metrics.</td></tr>
-        <tr><td><strong>Bigger embedding model</strong></td><td>Upgrade to <code>BAAI/bge-m3</code> for multilingual coverage, served via a small GPU.</td></tr>
+        <tr><td><strong>Bigger embedding model</strong></td><td>Upgrade to a larger multilingual model, served via a small GPU.</td></tr>
         <tr><td><strong>Rate limiting + abuse prevention</strong></td><td>Per-tenant quotas; output size caps.</td></tr>
         <tr><td><strong>CI/CD + image scanning</strong></td><td>Reproducible builds, signed images, dependency CVE gating.</td></tr>
       </table>
