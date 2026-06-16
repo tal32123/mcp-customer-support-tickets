@@ -471,8 +471,8 @@ flowchart LR
         <tr><th style="width: 30%">Dimension</th><th style="width: 35%">Support-ticket corpus <span class="pill pick">picked</span></th><th>Structured tabular</th></tr>
         <tr>
           <td>Data shape</td>
-          <td>Free-text bodies + categorical labels; messy &amp; multilingual.</td>
-          <td>Pure tabular — numerical features plus a label.</td>
+          <td>Free-text bodies (unstructured ticket prose) + categorical labels (queue, priority, type, language); messy (typos, mixed tone) and multilingual (EN + DE). <strong>Because</strong> the content is prose, not numbers, SQL can't query it — you need embeddings and retrieval, which is where the real engineering choices live.</td>
+          <td>Pure tabular — numerical features plus a label. Queryable directly with SQL; no retrieval layer needed.</td>
         </tr>
         <tr>
           <td>What "natural-language Q&amp;A" means</td>
@@ -486,8 +486,8 @@ flowchart LR
         </tr>
         <tr>
           <td>Generative angle</td>
-          <td>Natural fit for a <code>draft_reply</code> prompt grounded in dataset evidence.</td>
-          <td>No obvious generative surface beyond explanation.</td>
+          <td>Natural fit for a <code>draft_reply</code> tool grounded in dataset evidence. <strong>Because</strong> every row already contains a real <code>answer</code> field (the human support reply), retrieving similar past tickets gives the model concrete prior replies to imitate — the draft is anchored to how this dataset actually handled comparable cases, not invented.</td>
+          <td>No obvious generative surface — there's nothing to draft from a numeric churn label beyond explaining the prediction.</td>
         </tr>
         <tr>
           <td>Transfer to other domains</td>
