@@ -3,7 +3,7 @@
 from __future__ import annotations
 import logging
 import sys
-from typing import Literal
+from typing import Callable, Literal
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
@@ -29,20 +29,40 @@ log = logging.getLogger(__name__)
 mcp = FastMCP("customer-support-tickets")
 
 
-# Lazy globals — initialized on first use so test code can override.
+EmbedFn = Callable[[list[str]], np.ndarray]
+
+
+# Module-level singletons. Populated by _init() at startup so concurrent
+# tool dispatch never races on first-call initialization.
 _CFG: Config | None = None
 _STORE: TicketStore | None = None
+_EMBED_PASSAGES: EmbedFn | None = None
+_EMBED_QUERIES: EmbedFn | None = None
 
 
-def _embedder():
-    """Return a real embedding function. Lazily loads sentence-transformers."""
+def _make_embedders(model_name: str) -> tuple[EmbedFn, EmbedFn]:
+    """Load the embedding model once and return (embed_passages, embed_queries).
+
+    `intfloat/multilingual-e5-small` is trained with task-specific prefixes:
+    `"passage: "` for documents at index time, `"query: "` for queries at
+    search time. Using the same prefix for both halves silently degrades
+    retrieval quality, so we expose them separately.
+    """
     from sentence_transformers import SentenceTransformer
-    model_name = get_config().embedding_model
     model = SentenceTransformer(model_name)
-    def embed(texts: list[str]) -> np.ndarray:
-        prefixed = [f"query: {t}" for t in texts]
-        return model.encode(prefixed, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
-    return embed
+
+    def _encode(prefixed: list[str]) -> np.ndarray:
+        return model.encode(
+            prefixed, convert_to_numpy=True, normalize_embeddings=True,
+        ).astype(np.float32)
+
+    def embed_passages(texts: list[str]) -> np.ndarray:
+        return _encode([f"passage: {t}" for t in texts])
+
+    def embed_queries(texts: list[str]) -> np.ndarray:
+        return _encode([f"query: {t}" for t in texts])
+
+    return embed_passages, embed_queries
 
 
 def get_config() -> Config:
@@ -53,21 +73,38 @@ def get_config() -> Config:
 
 
 def get_store() -> TicketStore:
-    global _STORE
-    if _STORE is not None:
-        return _STORE
+    if _STORE is None:
+        _init()
+    return _STORE  # type: ignore[return-value]
+
+
+def get_query_embedder() -> EmbedFn:
+    if _EMBED_QUERIES is None:
+        _init()
+    return _EMBED_QUERIES  # type: ignore[return-value]
+
+
+def _init() -> None:
+    """Eagerly load the embedding model and open/build the store.
+
+    Called from main() before mcp.run(), and as a fallback from the
+    accessors above so tests that import the module directly still work.
+    """
+    global _STORE, _EMBED_PASSAGES, _EMBED_QUERIES
     cfg = get_config()
-    if cfg.store_path.exists() and (cfg.store_path / "tickets.lance").exists():
-        _STORE = TicketStore.open(path=cfg.store_path, revision=cfg.dataset_revision)
-        return _STORE
-    log.info("Building store at %s — first-run, this takes a few minutes.", cfg.store_path)
-    _STORE = build_store_from_huggingface(
-        path=cfg.store_path,
-        dataset_id=cfg.dataset_id,
-        revision=cfg.dataset_revision,
-        embedder=_embedder(),
-    )
-    return _STORE
+    if _EMBED_PASSAGES is None or _EMBED_QUERIES is None:
+        _EMBED_PASSAGES, _EMBED_QUERIES = _make_embedders(cfg.embedding_model)
+    if _STORE is None:
+        if cfg.store_path.exists() and (cfg.store_path / "tickets.lance").exists():
+            _STORE = TicketStore.open(path=cfg.store_path, revision=cfg.dataset_revision)
+        else:
+            log.info("Building store at %s — first-run, this takes a few minutes.", cfg.store_path)
+            _STORE = build_store_from_huggingface(
+                path=cfg.store_path,
+                dataset_id=cfg.dataset_id,
+                revision=cfg.dataset_revision,
+                embedder=_EMBED_PASSAGES,
+            )
 
 
 # --- server_info ---------------------------------------------------------
@@ -111,7 +148,7 @@ def search_tickets(
 ) -> list[dict]:
     cfg = get_config()
     return search_tickets_module.search_tickets_impl(
-        get_store(), _embedder(),
+        get_store(), get_query_embedder(),
         q=q, queue=queue, priority=priority, language=language, type=type,
         tags=tags, tags_mode=tags_mode, limit=limit,
         rerank_enabled=cfg.rerank_enabled,
@@ -157,13 +194,14 @@ def draft_reply(
     target_language: Annotated[str | None, Field(description="Language to write the draft in. Defaults to the ticket's own language field.")] = None,
 ) -> dict:
     return draft_reply_module.draft_reply_impl(
-        get_store(), _embedder(), _llm_client(),
+        get_store(), get_query_embedder(), _llm_client(),
         ticket_id=ticket_id, target_language=target_language,
     )
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    _init()
     mcp.run()
 
 
