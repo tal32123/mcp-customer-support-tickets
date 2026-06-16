@@ -38,6 +38,9 @@ _CFG: Config | None = None
 _STORE: TicketStore | None = None
 _EMBED_PASSAGES: EmbedFn | None = None
 _EMBED_QUERIES: EmbedFn | None = None
+# Cached LLM client. SDK constructors open HTTP connection pools, so
+# rebuilding per draft_reply call leaks file descriptors over time.
+_LLM_CLIENT: object | None = None
 
 
 def _make_embedders(model_name: str) -> tuple[EmbedFn, EmbedFn]:
@@ -95,7 +98,7 @@ def _init() -> None:
     if _EMBED_PASSAGES is None or _EMBED_QUERIES is None:
         _EMBED_PASSAGES, _EMBED_QUERIES = _make_embedders(cfg.embedding_model)
     if _STORE is None:
-        if cfg.store_path.exists() and (cfg.store_path / "tickets.lance").exists():
+        if TicketStore.is_valid(cfg.store_path, cfg.dataset_revision):
             _STORE = TicketStore.open(path=cfg.store_path, revision=cfg.dataset_revision)
         else:
             log.info("Building store at %s — first-run, this takes a few minutes.", cfg.store_path)
@@ -177,15 +180,20 @@ def aggregate_tickets(
 # --- draft_reply prompt --------------------------------------------------
 
 def _llm_client():
+    global _LLM_CLIENT
+    if _LLM_CLIENT is not None:
+        return _LLM_CLIENT
     cfg = get_config()
     if cfg.llm_provider is LlmProvider.ANTHROPIC:
-        return AnthropicClient(model=cfg.anthropic_model)
-    if cfg.llm_provider is LlmProvider.OPENAI:
-        return OpenAIClient(model=cfg.openai_model)
-    raise McpCstError(
-        ErrorCode.NO_LLM_CONFIGURED,
-        "draft_reply needs ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment",
-    )
+        _LLM_CLIENT = AnthropicClient(model=cfg.anthropic_model)
+    elif cfg.llm_provider is LlmProvider.OPENAI:
+        _LLM_CLIENT = OpenAIClient(model=cfg.openai_model)
+    else:
+        raise McpCstError(
+            ErrorCode.NO_LLM_CONFIGURED,
+            "draft_reply needs ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment",
+        )
+    return _LLM_CLIENT
 
 
 @mcp.prompt(description=draft_reply_module.DESCRIPTION)

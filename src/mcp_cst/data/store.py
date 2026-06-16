@@ -12,6 +12,7 @@ import pyarrow as pa
 
 
 TABLE_NAME = "tickets"
+REVISION_FILE = "revision.txt"
 
 _TAG_COLS = [f"tag_{i}" for i in range(1, 7)]
 
@@ -119,6 +120,9 @@ class TicketStore:
         )
         # BM25 full-text index over text_search
         table.create_fts_index("text_search", replace=True)
+        # Sidecar marker — used by `is_valid` to distinguish a complete
+        # store from a directory left behind by a crashed ingest.
+        (path / REVISION_FILE).write_text(revision, encoding="utf-8")
         return cls(db, table, path, revision)
 
     @classmethod
@@ -126,6 +130,30 @@ class TicketStore:
         db = lancedb.connect(str(path))
         table = db.open_table(TABLE_NAME)
         return cls(db, table, path, revision)
+
+    @classmethod
+    def is_valid(cls, path: Path, revision: str) -> bool:
+        """True if `path` holds a complete, non-empty store at `revision`.
+
+        Guards against partial writes (the table directory exists but the
+        sidecar marker hasn't been dropped) and revision drift (cache from a
+        different dataset version). Either condition triggers a rebuild.
+        """
+        sidecar = path / REVISION_FILE
+        if not sidecar.exists():
+            return False
+        try:
+            stored = sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if stored != revision:
+            return False
+        try:
+            db = lancedb.connect(str(path))
+            table = db.open_table(TABLE_NAME)
+            return table.count_rows() > 0
+        except Exception:
+            return False
 
     def row_count(self) -> int:
         return self._table.count_rows()
