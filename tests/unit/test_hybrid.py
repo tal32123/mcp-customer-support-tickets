@@ -64,3 +64,46 @@ def test_hybrid_respects_limit(store):
         store, query="app", filters={}, embedder=deterministic_embedder, limit=3,
     )
     assert len(hits) <= 3
+
+
+def test_rrf_empty_input_returns_empty():
+    """Both branches returning nothing must yield [] rather than crash."""
+    assert reciprocal_rank_fusion([]) == []
+    assert reciprocal_rank_fusion([[], []]) == []
+
+
+def test_rrf_dedupes_same_id_in_both_lists():
+    """A doc that appears in BM25 and vector must surface once, not twice."""
+    out = reciprocal_rank_fusion([["a", "b"], ["a", "c"]])
+    assert out.count("a") == 1
+    assert set(out) == {"a", "b", "c"}
+
+
+def test_rrf_single_list_preserves_order():
+    """If one branch is empty (e.g. FTS index missing), the other drives results."""
+    assert reciprocal_rank_fusion([["a", "b", "c"]]) == ["a", "b", "c"]
+    assert reciprocal_rank_fusion([["a", "b", "c"], []]) == ["a", "b", "c"]
+
+
+def test_hybrid_search_tags_and_vs_or(store):
+    """tags_mode='and' requires every tag; tags_mode='or' requires any.
+
+    The AND result must be a subset of OR (by id), and cardinality(AND) <= cardinality(OR).
+    """
+    common = {"shipping", "urgent"}
+    and_hits = hybrid_search(
+        store, query="package", filters={"tags": list(common), "tags_mode": "and"},
+        embedder=deterministic_embedder, limit=50,
+    )
+    or_hits = hybrid_search(
+        store, query="package", filters={"tags": list(common), "tags_mode": "or"},
+        embedder=deterministic_embedder, limit=50,
+    )
+    and_ids = {h["id"] for h in and_hits}
+    or_ids = {h["id"] for h in or_hits}
+    assert and_ids.issubset(or_ids)
+    assert len(and_hits) <= len(or_hits)
+    # Every AND hit really must contain both tags.
+    for h in and_hits:
+        rec = store.get(h["id"])
+        assert common.issubset(set(rec.tags))

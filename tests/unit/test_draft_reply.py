@@ -99,6 +99,71 @@ def test_target_language_defaults_to_ticket_language(store, monkeypatch):
     assert out["target_language"] == rec.language
 
 
+def test_select_grounding_threshold_excludes_below_0_70(monkeypatch):
+    """M4 / spec: candidates with cosine < 0.70 must be dropped; >= 0.70 kept."""
+    from mcp_cst.prompts import draft_reply as dr
+
+    # Query vector along x-axis. Construct candidates whose cosine with q
+    # is exactly 0.65, 0.71, 0.85 by tilting them off-axis.
+    q = np.zeros(384, dtype=np.float32); q[0] = 1.0
+
+    def make_candidate(cid: str, cos_sim: float, answer: str):
+        v = np.zeros(384, dtype=np.float32)
+        v[0] = cos_sim
+        v[1] = (1.0 - cos_sim * cos_sim) ** 0.5  # unit-norm by construction
+        return {"id": cid, "subject": "s", "body": "b", "answer": answer, "vector": v.tolist()}
+
+    fake_rows = [
+        make_candidate("below", 0.65, "ans-below"),
+        make_candidate("at",    0.71, "ans-at"),
+        make_candidate("above", 0.85, "ans-above"),
+    ]
+
+    class FakeSearch:
+        def limit(self, n): return self
+        def to_list(self): return fake_rows
+    class FakeTable:
+        def search(self, *a, **kw): return FakeSearch()
+    class FakeStore:
+        table = FakeTable()
+
+    def fake_embedder(_texts): return np.array([q])
+
+    out = dr.select_grounding(FakeStore(), fake_embedder, target_id="target_xx", target_text="t")
+    ids = [r[0] for r in out]
+    assert "below" not in ids
+    assert "at" in ids
+    assert "above" in ids
+
+
+def test_select_grounding_excludes_empty_answer(monkeypatch):
+    """Spec: candidates whose answer is empty/whitespace must be dropped even if similar."""
+    from mcp_cst.prompts import draft_reply as dr
+
+    q = np.zeros(384, dtype=np.float32); q[0] = 1.0
+    same = q.tolist()  # cosine = 1.0 for all
+
+    fake_rows = [
+        {"id": "empty",   "subject": "s", "body": "b", "answer": "",          "vector": same},
+        {"id": "spaces",  "subject": "s", "body": "b", "answer": "   \n\t",   "vector": same},
+        {"id": "real",    "subject": "s", "body": "b", "answer": "real ans",  "vector": same},
+    ]
+
+    class FakeSearch:
+        def limit(self, n): return self
+        def to_list(self): return fake_rows
+    class FakeTable:
+        def search(self, *a, **kw): return FakeSearch()
+    class FakeStore:
+        table = FakeTable()
+
+    def fake_embedder(_texts): return np.array([q])
+
+    out = dr.select_grounding(FakeStore(), fake_embedder, target_id="x", target_text="t")
+    ids = [r[0] for r in out]
+    assert ids == ["real"]
+
+
 def test_select_grounding_returns_top_n_by_similarity(store, raw_ticket_rows):
     """H2: when the candidate set contains more than MAX_GROUNDING matches above
     threshold, the returned set must be the top-N by similarity descending —

@@ -12,13 +12,20 @@ import mcp_cst.server as server
 @pytest.fixture
 def reset_globals():
     """Snap server module globals so each test starts clean."""
-    saved = (server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES)
+    saved = (
+        server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
+        server._LLM_CLIENT,
+    )
     server._CFG = None
     server._STORE = None
     server._EMBED_PASSAGES = None
     server._EMBED_QUERIES = None
+    server._LLM_CLIENT = None
     yield
-    server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES = saved
+    (
+        server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
+        server._LLM_CLIENT,
+    ) = saved
 
 
 def test_make_embedders_loads_model_once(reset_globals):
@@ -76,3 +83,64 @@ def test_init_is_idempotent(reset_globals, tmp_path, monkeypatch):
     # Model and store each built exactly once.
     assert ctor.call_count == 1
     assert build_fn.call_count == 1
+
+
+def test_init_opens_existing_store_without_rebuild(reset_globals, tmp_path, monkeypatch, raw_ticket_rows):
+    """H1: when a valid store exists at cfg.store_path, _init() must open it
+    rather than re-download and rebuild from HuggingFace. This is the
+    production restart hot-path."""
+    from mcp_cst.data.store import TicketStore
+
+    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path))
+
+    fake_model = MagicMock()
+    fake_model.encode.return_value = np.zeros((1, 384), dtype=np.float32)
+
+    def fixture_embedder(texts):
+        return np.zeros((len(texts), 384), dtype=np.float32)
+
+    # Pre-build a valid store at the exact path Config.from_env will compute.
+    cfg = server.Config.from_env()
+    TicketStore.create(
+        path=cfg.store_path, revision=cfg.dataset_revision,
+        rows=raw_ticket_rows[:10], embedder=fixture_embedder,
+    )
+
+    with patch("sentence_transformers.SentenceTransformer", return_value=fake_model), \
+         patch("mcp_cst.server.build_store_from_huggingface") as build_fn:
+        server._init()
+
+    build_fn.assert_not_called()
+    assert server._STORE is not None
+    assert server._STORE.row_count() == 10
+
+
+def test_llm_client_raises_when_no_provider_configured(reset_globals, tmp_path, monkeypatch):
+    """The NO_LLM_CONFIGURED error path on _llm_client()."""
+    from mcp_cst.errors import ErrorCode, McpCstError
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path / "nonexistent"))
+
+    with pytest.raises(McpCstError) as exc:
+        server._llm_client()
+    assert exc.value.code == ErrorCode.NO_LLM_CONFIGURED
+
+
+def test_llm_client_caches_singleton(reset_globals, tmp_path, monkeypatch):
+    """H3: the SDK client must be constructed once and reused.
+
+    Otherwise each draft_reply call would open a fresh HTTP connection pool.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path / "nonexistent"))
+
+    with patch("mcp_cst.server.AnthropicClient") as ctor:
+        ctor.return_value = MagicMock()
+        first = server._llm_client()
+        second = server._llm_client()
+        third = server._llm_client()
+
+    assert first is second is third
+    assert ctor.call_count == 1
