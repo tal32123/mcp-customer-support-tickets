@@ -135,7 +135,11 @@ class TicketStore:
         return list(arr)
 
     def get(self, ticket_id: str) -> TicketRecord | None:
-        rows = self._table.search().where(f"id = '{ticket_id}'").limit(1).to_list()
+        # Escape single quotes in the id to prevent WHERE-clause injection.
+        # ids are 12-char hex by construction, but the parameter is callable
+        # from outside and must be treated as untrusted.
+        safe = ticket_id.replace("'", "''")
+        rows = self._table.search().where(f"id = '{safe}'").limit(1).to_list()
         if not rows:
             return None
         r = rows[0]

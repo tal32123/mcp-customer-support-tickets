@@ -64,3 +64,11 @@ def test_get_missing_returns_none(store):
 def test_open_existing(store, raw_ticket_rows, tmp_path):
     reopened = TicketStore.open(path=store.path, revision="testrev")
     assert reopened.row_count() == len(raw_ticket_rows)
+
+
+def test_get_escapes_quotes_in_id(store):
+    """H1: a malicious id with a single quote must not corrupt the WHERE clause."""
+    # Without escaping, this would expand to:  WHERE id = 'x' OR '1'='1'
+    # and return an arbitrary row. With escaping, no rows match.
+    assert store.get("x' OR '1'='1") is None
+    assert store.get("'; DROP TABLE tickets; --") is None
