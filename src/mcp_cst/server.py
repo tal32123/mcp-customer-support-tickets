@@ -15,6 +15,7 @@ from .data.ingest import build_store_from_huggingface
 from .data.store import TicketStore
 from .resources import schema as schema_module
 from .resources import ticket as ticket_module
+from .tools import aggregate_tickets as aggregate_tickets_module
 from .tools import get_ticket as get_ticket_module
 from .tools import search_tickets as search_tickets_module
 from .tools import server_info as server_info_module
@@ -110,6 +111,25 @@ def search_tickets(
         q=q, queue=queue, priority=priority, language=language, type=type,
         tags=tags, tags_mode=tags_mode, limit=limit,
         rerank_enabled=cfg.rerank_enabled,
+    )
+
+
+# --- aggregate_tickets ---------------------------------------------------
+
+@mcp.tool(description=aggregate_tickets_module.DESCRIPTION)
+def aggregate_tickets(
+    group_by: Annotated[Literal["queue", "priority", "language", "type", "tags"], Field(description="Field to group rows by.")],
+    queue: Annotated[str | None, Field(description="Restrict to one queue value.")] = None,
+    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Restrict to one priority.")] = None,
+    language: Annotated[Literal["en", "de"] | None, Field(description="Restrict to English or German.")] = None,
+    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Restrict to one ticket type.")] = None,
+    tags: Annotated[list[str] | None, Field(description="Filter to tickets whose normalized `tags` list contains these values.")] = None,
+    tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = all listed tags; 'or' = any.")] = "and",
+) -> list[dict]:
+    return aggregate_tickets_module.aggregate_tickets_impl(
+        get_store(),
+        group_by=group_by, queue=queue, priority=priority, language=language,
+        type=type, tags=tags, tags_mode=tags_mode,
     )
 
 
