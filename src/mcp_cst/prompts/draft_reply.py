@@ -12,7 +12,7 @@ from ..data.store import TicketStore
 from ..docs import make_description
 from ..errors import ErrorCode, McpCstError
 from ..llm.protocol import LlmClient
-from ..safety import looks_like_injection, wrap_ticket
+from ..safety import escape_text, looks_like_injection, wrap_ticket
 
 
 SIMILARITY_THRESHOLD = 0.70
@@ -61,8 +61,13 @@ def select_grounding(
             continue
         # Vectors are L2-normalized at index time so dot == cosine. We
         # compute on the already-fetched candidate vectors rather than
-        # trusting whatever distance metric LanceDB used.
+        # trusting whatever distance metric LanceDB used. Re-normalize
+        # defensively in case a store was built by an older/buggy code
+        # path -- otherwise the 0.70 threshold becomes meaningless.
         cand_vec = np.asarray(r["vector"], dtype=np.float32)
+        norm = float(np.linalg.norm(cand_vec))
+        if norm > 0:
+            cand_vec = cand_vec / norm
         sim = float(np.dot(qvec, cand_vec))
         if sim < SIMILARITY_THRESHOLD:
             continue
@@ -95,11 +100,14 @@ def _build_user(
         "Prior similar tickets and how they were answered (grounding examples):",
     ]
     for gid, subj, body, ans, sim in grounding:
+        # Escape grounding fields so a stored subject/body/answer cannot
+        # break out of the <prior_ticket> structure and inject pseudo-tags
+        # into the LLM's view of the prompt.
         parts.append(
             f"<prior_ticket id={gid!r} similarity={sim:.2f}>\n"
-            f"  <subject>{subj}</subject>\n"
-            f"  <body>{body}</body>\n"
-            f"  <prior_answer>{ans}</prior_answer>\n"
+            f"  <subject>{escape_text(subj)}</subject>\n"
+            f"  <body>{escape_text(body)}</body>\n"
+            f"  <prior_answer>{escape_text(ans)}</prior_answer>\n"
             "</prior_ticket>"
         )
     parts.append("")

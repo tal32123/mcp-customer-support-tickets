@@ -20,6 +20,16 @@ _INJECTION_PATTERNS = [
 _EXTRA_ENTITIES = {'"': "&quot;", "'": "&apos;"}
 
 
+def escape_text(text: str) -> str:
+    """XML-escape a string for embedding inside a tag body.
+
+    Use whenever you splice untrusted ticket content into an LLM prompt and
+    aren't routing it through `wrap_ticket`. Escapes `& < >` plus `' "` so
+    nothing in the content can close a surrounding tag or attribute.
+    """
+    return escape(text, _EXTRA_ENTITIES)
+
+
 def _normalize(text: str) -> str:
     """NFKC-normalize then replace zero-width and other format-category code
     points with a space. Folds homoglyphs and invisible characters that an
