@@ -11,6 +11,8 @@ from .config import Config
 from .data.ingest import build_store_from_huggingface
 from .data.store import TicketStore
 from .resources import schema as schema_module
+from .resources import ticket as ticket_module
+from .tools import get_ticket as get_ticket_module
 from .tools import server_info as server_info_module
 
 
@@ -71,6 +73,18 @@ def server_info() -> dict:
 @mcp.resource("schema://tickets", description=schema_module.DESCRIPTION)
 def schema_tickets() -> str:
     return schema_module.schema_resource_body()
+
+
+# --- get_ticket + ticket:// resource -------------------------------------
+
+@mcp.tool(description=get_ticket_module.DESCRIPTION)
+def get_ticket(id: str) -> dict:
+    return get_ticket_module.get_ticket_impl(get_store(), id)
+
+
+@mcp.resource("ticket://{id}", description=ticket_module.DESCRIPTION)
+def ticket(id: str) -> str:
+    return ticket_module.ticket_resource_body(get_store(), id)
 
 
 def main() -> None:
