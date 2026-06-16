@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 import re
+import unicodedata
 from xml.sax.saxutils import escape, quoteattr
 
 
+# The dotall flag lets `.` match newlines so multi-line variants like
+# "ignore\nprevious instructions" are still caught.
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE),
-    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE),
+    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE | re.DOTALL),
+    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE | re.DOTALL),
     re.compile(r"system\s+prompt\s*[:=]", re.IGNORECASE),
     re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
     re.compile(r"\bnew\s+instructions?\s*[:=]", re.IGNORECASE),
@@ -17,9 +20,29 @@ _INJECTION_PATTERNS = [
 _EXTRA_ENTITIES = {'"': "&quot;", "'": "&apos;"}
 
 
+def _normalize(text: str) -> str:
+    """NFKC-normalize then replace zero-width and other format-category code
+    points with a space. Folds homoglyphs and invisible characters that an
+    attacker might use to slip a pattern past plain-text regex matching.
+
+    Not a security boundary -- see `looks_like_injection`.
+    """
+    nfkc = unicodedata.normalize("NFKC", text)
+    return "".join(" " if unicodedata.category(ch) == "Cf" else ch for ch in nfkc)
+
+
 def looks_like_injection(text: str) -> bool:
-    """True if the text contains language commonly used in prompt-injection attacks."""
-    return any(p.search(text) for p in _INJECTION_PATTERNS)
+    """True if `text` contains language commonly used in prompt-injection
+    attacks.
+
+    HEURISTIC, NOT A SECURITY GUARANTEE. The patterns are English-only and
+    even with NFKC + format-stripping a determined attacker can paraphrase
+    around them. Use this as one signal alongside the `<ticket>`-tag
+    convention and the LLM-side reminder; do not rely on it as a sole
+    defense against malicious ticket content.
+    """
+    normalized = _normalize(text)
+    return any(p.search(normalized) for p in _INJECTION_PATTERNS)
 
 
 def wrap_ticket(*, ticket_id: str, subject: str, body: str, extra: dict[str, str] | None = None) -> str:
