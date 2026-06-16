@@ -409,7 +409,6 @@
       <li><a href="#s8"><span class="num">08</span>Install</a></li>
       <li><a href="#s9"><span class="num">09</span>Revision pin</a></li>
       <li><a href="#s10"><span class="num">10</span>Guardrails</a></li>
-      <li><a href="#s11"><span class="num">11</span>draft_reply</a></li>
       <li><a href="#s12"><span class="num">12</span>Production deltas</a></li>
       <li><a href="#s13"><span class="num">13</span>Risks</a></li>
       <li><a href="#s14"><span class="num">14</span>Applicability</a></li>
@@ -524,7 +523,7 @@ flowchart LR
         <tr><td><code>server_info</code></td><td>Tool</td><td>Returns dataset revision, embedding model id, row count, license, build timestamp. Read-only metadata.</td></tr>
         <tr><td><code>ticket://{id}</code></td><td>Resource</td><td>Citation handle. Lets Claude attach a specific ticket to the chat.</td></tr>
         <tr><td><code>schema://tickets</code></td><td>Resource</td><td>The list of columns and valid values (52 queues, 5 priorities, 2 languages, etc.).</td></tr>
-        <tr><td><code>draft_reply</code></td><td>Prompt</td><td>User-invoked. Takes a ticket id + target language, returns a drafted reply.</td></tr>
+        <tr><td><code>draft_reply</code></td><td>Prompt</td><td>User-invoked. Takes a ticket id + target language, returns assembled context (target ticket + up to 5 grounding prior tickets) plus a type-aware scaffold for the calling client's LLM to fill in.</td></tr>
       </table>
 
       <h3>What questions it answers</h3>
@@ -588,7 +587,7 @@ sequenceDiagram
         <tr><td>Aggregations &amp; filters</td><td>Polars over LanceDB's Arrow output</td><td>Zero-copy <code>group_by</code> for <code>aggregate_tickets</code>; sub-millisecond at 62k rows.</td></tr>
         <tr><td>Embedding model</td><td><code>intfloat/multilingual-e5-small</code> (384-dim)</td><td>Free, local, multilingual (handles EN <em>and</em> DE).</td></tr>
         <tr><td>Transport</td><td>stdio</td><td>Default for Claude Code / Codex / Claude Desktop. No network, no auth.</td></tr>
-        <tr><td>LLM (for <code>draft_reply</code>)</td><td><code>ANTHROPIC_API_KEY</code> (Claude) or <code>OPENAI_API_KEY</code> (GPT-4) env var</td><td>Picked at runtime from whichever is set.</td></tr>
+        <tr><td>LLM (for <code>draft_reply</code>)</td><td>None — server only assembles context + scaffold</td><td>The calling MCP client's own LLM writes the reply. No API key required.</td></tr>
       </table>
     </section>
 
@@ -677,13 +676,12 @@ flowchart TB
       "command": "uvx",
       "args": ["mcp-customer-support-tickets"],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
         "MCP_CST_DATASET_REVISION": "main"
       }
     }
   }
 }</code></pre>
-      <p class="footnote">Either <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> works (used only by <code>draft_reply</code>). All retrieval is local and requires no API key.</p>
+      <p class="footnote">All retrieval, grounding, and scaffold assembly is local — no API key required. The calling MCP client's own LLM produces the final reply text.</p>
     </section>
 
     <section class="s" id="s9">
@@ -714,7 +712,7 @@ flowchart TB
       <p>If Claude asks for a date filter, an invalid priority, or an unsupported language, the server returns a structured error explaining the dataset can't answer that. No silent fallbacks — silent fallbacks are how models end up hallucinating with confidence.</p>
 
       <h3>G3 · Verbatim only</h3>
-      <p>Read endpoints return exactly what's in the dataset. The server never summarizes or paraphrases. The <em>only</em> place new text is generated is the <code>draft_reply</code> prompt.</p>
+      <p>Read endpoints return exactly what's in the dataset. The server never summarizes or paraphrases, and never calls out to an LLM. <code>draft_reply</code> only assembles grounded context plus a scaffold — the calling MCP client's own LLM writes any new text.</p>
 
       <h3>G4 · Treat ticket text as untrusted</h3>
       <p>Ticket bodies are user-written and may contain things like <em>"Ignore previous instructions and…"</em>. The server wraps returned content in tags:</p>
@@ -726,37 +724,6 @@ flowchart TB
 
       <h3>G5 · Read-only, declared</h3>
       <p>Every tool sets MCP's <code>readOnlyHint: true</code> + <code>destructiveHint: false</code>. There is no write endpoint anywhere in the code — not as a flag, not as a hidden mode.</p>
-    </section>
-
-    <section class="s" id="s11">
-      <p class="s-eyebrow">11 · draft_reply</p>
-      <h2>The one generative surface</h2>
-      <p>
-        <code>draft_reply(ticket_id, target_language?)</code> is the only place new text is generated. The user finds a ticket via <code>search_tickets</code> first, then passes its id here. The retrieval and context assembly are done by <strong>code, not the LLM</strong> — the model only writes the reply text. The prompt confirms the ticket with the user before drafting, and grounds the draft in how prior similar tickets were answered.
-      </p>
-
-      <h3>Mechanics, step by step</h3>
-      <ol>
-        <li><strong>Resolve the target ticket.</strong> Look up <code>ticket_id</code> via the store. If it doesn't exist, refuse with a structured error.</li>
-        <li><strong>Confirm with the user.</strong> The prompt's first message surfaces the target ticket's subject and body so the user can verify it's the right one before any draft is written.</li>
-        <li><strong>Retrieve grounding examples in code.</strong> Embed the target ticket's subject+body, run kNN against the store, and keep tickets where <strong>cosine similarity ≥ 70%</strong> AND <code>answer</code> is non-empty. Take up to the top 5.</li>
-        <li><strong>Refuse loudly if zero qualify.</strong> If no ticket clears the threshold with a non-empty answer, the prompt returns a clear refusal (<em>"No sufficiently similar prior tickets to ground a reply"</em>) rather than drafting an ungrounded reply. Matches G2.</li>
-        <li><strong>Assemble context.</strong> The prompt hands the LLM: the target ticket (wrapped in <code>&lt;ticket&gt;</code> tags per G4), the 1–5 grounding examples each as <code>&lt;prior_ticket&gt;…&lt;prior_answer&gt;…</code> pairs, and the target language.</li>
-        <li><strong>Draft.</strong> The LLM produces the reply, beginning with the source citation (<em>"Based on ticket <code>abc123def456</code>, drawing on N prior similar replies"</em>) so the draft stays traceable.</li>
-      </ol>
-
-      <h3>Rules</h3>
-      <table>
-        <tr><th style="width: 24%">Rule</th><th>Behaviour</th></tr>
-        <tr><td>Source citation</td><td>Reply begins with <em>"Based on ticket <code>abc123def456</code>, drawing on N prior similar replies"</em>. The N grounding ticket ids are also listed.</td></tr>
-        <tr><td>Grounding selection</td><td>Up to 5 tickets with cosine similarity ≥ 70% AND non-empty <code>answer</code>. Selection done in code, not by the LLM.</td></tr>
-        <tr><td>Refusal when ungrounded</td><td>If 0 tickets qualify, refuse with a structured error. No silent fallback to ungrounded generation.</td></tr>
-        <tr><td>Confirmation step</td><td>Prompt asks the user to confirm the target ticket (subject + body shown) before drafting, so id mismatches surface early.</td></tr>
-        <tr><td>Injection refusal</td><td>If the target ticket body contains injection-shaped patterns (e.g. <em>"ignore previous instructions"</em>), refuse with a clear message rather than drafting.</td></tr>
-        <tr><td>Tone &amp; style</td><td>Follows the style and patterns of the retrieved prior <code>answer</code>s — that's the point of grounding. The reply is shaped by how this dataset's support team actually handled similar cases.</td></tr>
-        <tr><td>Language</td><td>Reply is written in <code>target_language</code> if supplied; defaults to the ticket's own <code>language</code> field.</td></tr>
-        <tr><td>LLM choice</td><td>Claude via Anthropic SDK if <code>ANTHROPIC_API_KEY</code> is set, else OpenAI if <code>OPENAI_API_KEY</code>. If neither, refuse with a setup hint.</td></tr>
-      </table>
     </section>
 
     <section class="s" id="s12">
@@ -786,7 +753,7 @@ flowchart TB
         <tr>
           <td>Hallucinated tickets</td>
           <td>If the server paraphrases instead of returning bytes, the LLM downstream can't be trusted.</td>
-          <td><strong>G3</strong>: verbatim-only read endpoints. <code>draft_reply</code> is the only generative surface.</td>
+          <td><strong>G3</strong>: verbatim-only read endpoints; the server never calls an LLM. <code>draft_reply</code> only assembles context + scaffold.</td>
         </tr>
         <tr>
           <td>Prompt injection via ticket bodies</td>
@@ -852,7 +819,7 @@ flowchart TB
 ├── README.md                 # install, env vars, MCP config for Claude Code / Codex
 ├── src/mcp_cst/
 │   ├── server.py             # FastMCP entry point
-│   ├── config.py             # env vars, revision pin, API-key detection
+│   ├── config.py             # env vars, revision pin
 │   ├── data/
 │   │   ├── store.py          # LanceDB: rows + BM25 + vectors + where-filters
 │   │   ├── aggregates.py     # Polars over Arrow for group-by counts
@@ -877,7 +844,6 @@ flowchart TB
         <li><strong>Python 3.13</strong></li>
         <li><strong><code>uv</code></strong> (<a href="https://docs.astral.sh/uv/">install</a>) — used for env management, dependency resolution, and the <code>uvx</code> launcher MCP clients invoke.</li>
         <li>A working internet connection on first run (one-time downloads of the dataset Parquet and the embedding model).</li>
-        <li>Optional but required for <code>draft_reply</code>: <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code>.</li>
       </ul>
 
       <h3>A · Local development</h3>
@@ -905,18 +871,15 @@ uv run pytest</code></pre>
       <p>The <code>claude</code> CLI registers MCP servers without editing any JSON. <code>--scope user</code> makes the server available across every project; drop it for cwd-only. Everything after <code>--</code> is the spawn command.</p>
 <pre><code># published form (after PyPI release)
 claude mcp add customer-support-tickets --scope user \
-  --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -- uvx mcp-customer-support-tickets
 
 # local-checkout form (pre-publish)
 claude mcp add customer-support-tickets --scope user \
-  --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
 
 # verify
 claude mcp list
 claude mcp get customer-support-tickets</code></pre>
-      <p>On Windows PowerShell, swap <code>$ANTHROPIC_API_KEY</code> for <code>$env:ANTHROPIC_API_KEY</code> and use backticks for line continuation.</p>
 
       <h3>D · Wire it into Codex CLI</h3>
       <p>Codex reads <code>~/.codex/config.toml</code>. Add a stanza under <code>[mcp_servers.&lt;name&gt;]</code>:</p>
@@ -924,13 +887,11 @@ claude mcp get customer-support-tickets</code></pre>
 [mcp_servers.customer-support-tickets]
 command = "uvx"
 args = ["mcp-customer-support-tickets"]
-env = { ANTHROPIC_API_KEY = "sk-ant-..." }
 
 # local-checkout form
 [mcp_servers.customer-support-tickets]
 command = "uv"
-args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
-env = { ANTHROPIC_API_KEY = "sk-ant-..." }</code></pre>
+args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]</code></pre>
 
       <h3>E · Wire it into Claude Desktop</h3>
       <p>Claude Desktop has no CLI — edit the config JSON directly:</p>
@@ -943,8 +904,6 @@ env = { ANTHROPIC_API_KEY = "sk-ant-..." }</code></pre>
       <h3>Environment variables</h3>
       <table>
         <tr><th style="width: 36%">Variable</th><th style="width: 14%">Required</th><th>Purpose</th></tr>
-        <tr><td><code>ANTHROPIC_API_KEY</code></td><td>One of these for <code>draft_reply</code></td><td>Use Claude as the drafting model. Preferred when set.</td></tr>
-        <tr><td><code>OPENAI_API_KEY</code></td><td>↑</td><td>Use GPT as the drafting model. Used only if <code>ANTHROPIC_API_KEY</code> is unset.</td></tr>
         <tr><td><code>MCP_CST_DATASET_REVISION</code></td><td>No</td><td>HF dataset revision pin. Defaults to a known-good commit hash baked into the package.</td></tr>
         <tr><td><code>MCP_CST_CACHE_DIR</code></td><td>No</td><td>Override the cache directory. Defaults to <code>platformdirs.user_cache_dir("mcp-customer-support-tickets")</code>.</td></tr>
         <tr><td><code>RERANK</code></td><td>No</td><td>Set to <code>true</code> to enable cross-encoder reranking (downloads a ~270 MB model on first use). Default off.</td></tr>
@@ -956,7 +915,7 @@ env = { ANTHROPIC_API_KEY = "sk-ant-..." }</code></pre>
         <li><em>"Which dataset revision is this server on?"</em> → exercises <code>server_info</code>.</li>
         <li><em>"How many German billing tickets are there?"</em> → exercises <code>aggregate_tickets</code>.</li>
         <li><em>"Find tickets about login problems"</em> → exercises hybrid <code>search_tickets</code>.</li>
-        <li><em>"Draft a reply to ticket &lt;id&gt; in German"</em> → exercises <code>draft_reply</code> (requires an API key).</li>
+        <li><em>"Draft a reply to ticket &lt;id&gt; in German"</em> → exercises <code>draft_reply</code> (returns assembled context + scaffold for your client's LLM).</li>
       </ul>
       <p class="footnote">If the first run hangs, it's almost certainly the embedding pass over 62k tickets — progress is reported via MCP's <code>notifications/progress</code>, but if your client doesn't surface them, tail stderr for status lines.</p>
     </section>

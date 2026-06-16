@@ -7,7 +7,7 @@ dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
 - **Search** by hybrid BM25 + vector across ~62k EN/DE support tickets.
 - **Fetch** any ticket verbatim by id.
 - **Aggregate** counts by queue, priority, language, type, or tags.
-- **Draft** a reply grounded in up to 5 prior similar tickets+answers (>=70% cosine similarity).
+- **Assemble** a grounded draft-reply prompt: target ticket + up to 5 prior tickets+answers (cosine >= 0.70) + a type-aware scaffold the caller's LLM fills in. No API key needed.
 
 ## Install (via MCP client)
 
@@ -18,7 +18,6 @@ dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
       "command": "uvx",
       "args": ["mcp-customer-support-tickets"],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
         "MCP_CST_DATASET_REVISION": "main"
       }
     }
@@ -40,8 +39,6 @@ uv run pytest                          # tests
 
 | Var | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | one of these for `draft_reply` | Drafting via Claude (preferred). |
-| `OPENAI_API_KEY` | as above | Drafting via GPT (fallback). |
 | `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. |
 | `MCP_CST_CACHE_DIR` | no | Override cache dir. |
 | `RERANK` | no | `true` enables cross-encoder rerank (deferred; stub for now). |

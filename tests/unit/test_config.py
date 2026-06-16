@@ -1,11 +1,9 @@
 import os
 import pytest
-from mcp_cst.config import Config, LlmProvider
+from mcp_cst.config import Config
 
 
 def test_defaults(monkeypatch, tmp_path):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("MCP_CST_DATASET_REVISION", raising=False)
     monkeypatch.delenv("MCP_CST_CACHE_DIR", raising=False)
     monkeypatch.delenv("RERANK", raising=False)
@@ -14,21 +12,6 @@ def test_defaults(monkeypatch, tmp_path):
     assert cfg.dataset_revision  # baked-in default
     assert cfg.embedding_model == "intfloat/multilingual-e5-small"
     assert cfg.rerank_enabled is False
-    assert cfg.llm_provider is LlmProvider.NONE
-
-
-def test_anthropic_preferred(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
-    cfg = Config.from_env()
-    assert cfg.llm_provider is LlmProvider.ANTHROPIC
-
-
-def test_openai_fallback(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
-    cfg = Config.from_env()
-    assert cfg.llm_provider is LlmProvider.OPENAI
 
 
 def test_cache_dir_override(monkeypatch, tmp_path):

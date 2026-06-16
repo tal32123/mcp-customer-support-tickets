@@ -10,7 +10,6 @@ def test_error_codes_defined():
         "UNSUPPORTED_FILTER",
         "NO_GROUNDING_AVAILABLE",
         "INJECTION_DETECTED",
-        "NO_LLM_CONFIGURED",
         "DATASET_UNAVAILABLE",
     ]:
         assert hasattr(ErrorCode, code)

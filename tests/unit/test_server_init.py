@@ -14,17 +14,14 @@ def reset_globals():
     """Snap server module globals so each test starts clean."""
     saved = (
         server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
-        server._LLM_CLIENT,
     )
     server._CFG = None
     server._STORE = None
     server._EMBED_PASSAGES = None
     server._EMBED_QUERIES = None
-    server._LLM_CLIENT = None
     yield
     (
         server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
-        server._LLM_CLIENT,
     ) = saved
 
 
@@ -115,32 +112,3 @@ def test_init_opens_existing_store_without_rebuild(reset_globals, tmp_path, monk
     assert server._STORE.row_count() == 10
 
 
-def test_llm_client_raises_when_no_provider_configured(reset_globals, tmp_path, monkeypatch):
-    """The NO_LLM_CONFIGURED error path on _llm_client()."""
-    from mcp_cst.errors import ErrorCode, McpCstError
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path / "nonexistent"))
-
-    with pytest.raises(McpCstError) as exc:
-        server._llm_client()
-    assert exc.value.code == ErrorCode.NO_LLM_CONFIGURED
-
-
-def test_llm_client_caches_singleton(reset_globals, tmp_path, monkeypatch):
-    """H3: the SDK client must be constructed once and reused.
-
-    Otherwise each draft_reply call would open a fresh HTTP connection pool.
-    """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path / "nonexistent"))
-
-    with patch("mcp_cst.server.AnthropicClient") as ctor:
-        ctor.return_value = MagicMock()
-        first = server._llm_client()
-        second = server._llm_client()
-        third = server._llm_client()
-
-    assert first is second is third
-    assert ctor.call_count == 1
