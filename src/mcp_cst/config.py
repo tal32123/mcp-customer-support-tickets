@@ -3,7 +3,6 @@
 from __future__ import annotations
 import os
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 import platformdirs
@@ -16,12 +15,6 @@ EMBEDDING_DIM = 384
 CACHE_APPNAME = "mcp-customer-support-tickets"
 
 
-class LlmProvider(StrEnum):
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-    NONE = "none"
-
-
 @dataclass(frozen=True)
 class Config:
     dataset_id: str
@@ -30,9 +23,6 @@ class Config:
     embedding_dim: int
     cache_root: Path
     rerank_enabled: bool
-    llm_provider: LlmProvider
-    anthropic_model: str = "claude-opus-4-7"
-    openai_model: str = "gpt-4o"
 
     @property
     def store_path(self) -> Path:
@@ -47,13 +37,6 @@ class Config:
 
         rerank = os.environ.get("RERANK", "").lower() == "true"
 
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            provider = LlmProvider.ANTHROPIC
-        elif os.environ.get("OPENAI_API_KEY"):
-            provider = LlmProvider.OPENAI
-        else:
-            provider = LlmProvider.NONE
-
         return cls(
             dataset_id=DATASET_ID,
             dataset_revision=os.environ.get("MCP_CST_DATASET_REVISION", DEFAULT_REVISION),
@@ -61,5 +44,4 @@ class Config:
             embedding_dim=EMBEDDING_DIM,
             cache_root=cache_root,
             rerank_enabled=rerank,
-            llm_provider=provider,
         )

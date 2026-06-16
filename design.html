@@ -901,8 +901,44 @@ uv run pytest</code></pre>
 <pre><code>uvx mcp-customer-support-tickets</code></pre>
       <p>This is the form used in the Claude Code / Codex / Claude Desktop config block from <a href="#s8">§8</a>.</p>
 
-      <h3>C · Wire it into Claude Code</h3>
-      <p>Add to your MCP client config (see <a href="#s8">§8</a> for the JSON shape). Once configured, restart the client; the server's tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>), resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
+      <h3>C · Wire it into Claude Code (one-shot CLI)</h3>
+      <p>The <code>claude</code> CLI registers MCP servers without editing any JSON. <code>--scope user</code> makes the server available across every project; drop it for cwd-only. Everything after <code>--</code> is the spawn command.</p>
+<pre><code># published form (after PyPI release)
+claude mcp add customer-support-tickets --scope user \
+  --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  -- uvx mcp-customer-support-tickets
+
+# local-checkout form (pre-publish)
+claude mcp add customer-support-tickets --scope user \
+  --env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
+
+# verify
+claude mcp list
+claude mcp get customer-support-tickets</code></pre>
+      <p>On Windows PowerShell, swap <code>$ANTHROPIC_API_KEY</code> for <code>$env:ANTHROPIC_API_KEY</code> and use backticks for line continuation.</p>
+
+      <h3>D · Wire it into Codex CLI</h3>
+      <p>Codex reads <code>~/.codex/config.toml</code>. Add a stanza under <code>[mcp_servers.&lt;name&gt;]</code>:</p>
+<pre><code># published form
+[mcp_servers.customer-support-tickets]
+command = "uvx"
+args = ["mcp-customer-support-tickets"]
+env = { ANTHROPIC_API_KEY = "sk-ant-..." }
+
+# local-checkout form
+[mcp_servers.customer-support-tickets]
+command = "uv"
+args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+env = { ANTHROPIC_API_KEY = "sk-ant-..." }</code></pre>
+
+      <h3>E · Wire it into Claude Desktop</h3>
+      <p>Claude Desktop has no CLI — edit the config JSON directly:</p>
+      <ul>
+        <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
+        <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
+      </ul>
+      <p>Drop in the JSON block from <a href="#s8">§8</a> and restart the app. Once configured, the server's tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>), resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
 
       <h3>Environment variables</h3>
       <table>

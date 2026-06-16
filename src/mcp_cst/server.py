@@ -10,12 +10,9 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 from typing_extensions import Annotated
 
-from .config import Config, LlmProvider
+from .config import Config
 from .data.ingest import build_store_from_huggingface
 from .data.store import TicketStore
-from .errors import ErrorCode, McpCstError
-from .llm.anthropic_client import AnthropicClient
-from .llm.openai_client import OpenAIClient
 from .prompts import draft_reply as draft_reply_module
 from .resources import schema as schema_module
 from .resources import ticket as ticket_module
@@ -38,9 +35,6 @@ _CFG: Config | None = None
 _STORE: TicketStore | None = None
 _EMBED_PASSAGES: EmbedFn | None = None
 _EMBED_QUERIES: EmbedFn | None = None
-# Cached LLM client. SDK constructors open HTTP connection pools, so
-# rebuilding per draft_reply call leaks file descriptors over time.
-_LLM_CLIENT: object | None = None
 
 
 def _make_embedders(model_name: str) -> tuple[EmbedFn, EmbedFn]:
@@ -179,30 +173,13 @@ def aggregate_tickets(
 
 # --- draft_reply prompt --------------------------------------------------
 
-def _llm_client():
-    global _LLM_CLIENT
-    if _LLM_CLIENT is not None:
-        return _LLM_CLIENT
-    cfg = get_config()
-    if cfg.llm_provider is LlmProvider.ANTHROPIC:
-        _LLM_CLIENT = AnthropicClient(model=cfg.anthropic_model)
-    elif cfg.llm_provider is LlmProvider.OPENAI:
-        _LLM_CLIENT = OpenAIClient(model=cfg.openai_model)
-    else:
-        raise McpCstError(
-            ErrorCode.NO_LLM_CONFIGURED,
-            "draft_reply needs ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment",
-        )
-    return _LLM_CLIENT
-
-
 @mcp.prompt(description=draft_reply_module.DESCRIPTION)
 def draft_reply(
     ticket_id: Annotated[str, Field(description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft.")],
     target_language: Annotated[str | None, Field(description="Language to write the draft in. Defaults to the ticket's own language field.")] = None,
 ) -> dict:
     return draft_reply_module.draft_reply_impl(
-        get_store(), get_query_embedder(), _llm_client(),
+        get_store(), get_query_embedder(),
         ticket_id=ticket_id, target_language=target_language,
     )
 
