@@ -34,11 +34,6 @@ DESCRIPTION = make_description(
 )
 
 
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    return float(np.dot(a, b) / denom) if denom else 0.0
-
-
 def select_grounding(
     store: TicketStore,
     embedder: Callable[[list[str]], np.ndarray],
@@ -49,6 +44,8 @@ def select_grounding(
     """Return up to 5 (id, subject, body, answer, similarity) tuples.
 
     Filters: cosine similarity >= 0.70 AND non-empty answer AND id != target.
+    Sorted by similarity descending so the top-N are the best matches even
+    when the LanceDB candidate set's order differs from cosine order.
     """
     qvec = embedder([target_text])[0]
     candidates = (
@@ -62,13 +59,16 @@ def select_grounding(
             continue
         if not (r.get("answer") or "").strip():
             continue
-        sim = _cosine(qvec, np.array(r["vector"], dtype=np.float32))
+        # Vectors are L2-normalized at index time so dot == cosine. We
+        # compute on the already-fetched candidate vectors rather than
+        # trusting whatever distance metric LanceDB used.
+        cand_vec = np.asarray(r["vector"], dtype=np.float32)
+        sim = float(np.dot(qvec, cand_vec))
         if sim < SIMILARITY_THRESHOLD:
             continue
         scored.append((r["id"], r["subject"], r["body"], r["answer"], sim))
-        if len(scored) >= MAX_GROUNDING:
-            break
-    return scored
+    scored.sort(key=lambda t: t[4], reverse=True)
+    return scored[:MAX_GROUNDING]
 
 
 def _build_system(target_language: str) -> str:

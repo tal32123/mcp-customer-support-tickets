@@ -97,3 +97,21 @@ def test_target_language_defaults_to_ticket_language(store, monkeypatch):
     rec = store.get(first_id)
     out = draft_reply_impl(store, embed, fake_llm, ticket_id=first_id)  # no target_language
     assert out["target_language"] == rec.language
+
+
+def test_select_grounding_returns_top_n_by_similarity(store, raw_ticket_rows):
+    """H2: when the candidate set contains more than MAX_GROUNDING matches above
+    threshold, the returned set must be the top-N by similarity descending —
+    not just the first N encountered."""
+    from mcp_cst.prompts.draft_reply import select_grounding
+    first_id = store.all_ids()[0]
+    rec = store.get(first_id)
+    target_text = f"{rec.subject}\n{rec.body}"
+    result = select_grounding(store, embed, target_id=first_id, target_text=target_text)
+    # All similarities monotonically non-increasing.
+    sims = [r[4] for r in result]
+    assert sims == sorted(sims, reverse=True)
+    # No more than MAX_GROUNDING entries.
+    assert len(result) <= 5
+    # Target itself is excluded.
+    assert all(r[0] != first_id for r in result)
