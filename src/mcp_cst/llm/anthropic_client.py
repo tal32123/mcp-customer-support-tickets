@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..errors import ErrorCode, McpCstError
+
 
 def _make_sdk_client():
     import anthropic
@@ -21,4 +23,16 @@ class AnthropicClient:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return resp.content[0].text
+        if not resp.content:
+            raise McpCstError(
+                ErrorCode.LLM_RESPONSE_INVALID,
+                f"anthropic returned empty content (stop_reason={getattr(resp, 'stop_reason', None)!r})",
+            )
+        block = resp.content[0]
+        text = getattr(block, "text", None)
+        if not text:
+            raise McpCstError(
+                ErrorCode.LLM_RESPONSE_INVALID,
+                f"anthropic content[0] is not a text block (type={getattr(block, 'type', None)!r})",
+            )
+        return text
