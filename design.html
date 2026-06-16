@@ -414,7 +414,6 @@
       <li><a href="#s13"><span class="num">13</span>Risks</a></li>
       <li><a href="#s14"><span class="num">14</span>Applicability</a></li>
       <li><a href="#s15"><span class="num">15</span>Build plan</a></li>
-      <li><a href="#decisions"><span class="num">→</span>Sign-off</a></li>
     </ol>
   </nav>
 
@@ -800,7 +799,7 @@ flowchart TB
         <tr>
           <td>PII leakage (deferred)</td>
           <td>Bodies could contain emails / names / IDs that look real.</td>
-          <td>Deferred per direction. Mitigation path: Presidio NER on egress (§12).</td>
+          <td>Deferred per direction. Mitigation path: PII redaction on egress (§12).</td>
         </tr>
       </table>
     </section>
@@ -846,21 +845,6 @@ flowchart TB
     ├── fixtures/             # ~200 rows for CI
     └── unit/                 # tool logic, hybrid scoring, guardrails</code></pre>
     </section>
-
-    <aside class="decisions" id="decisions">
-      <div class="label">Sign-off</div>
-      <h2>Decisions to confirm</h2>
-      <ul>
-        <li><span class="check"></span><span>Scope is right: <code>search_tickets</code> (hybrid) + <code>get_ticket</code> + <code>aggregate_tickets</code> + <code>schema://</code> + <code>ticket://</code> + <code>draft_reply</code>.</span></li>
-        <li><span class="check"></span><span>Stack is right: Python + FastMCP + LanceDB (rows + BM25 + vectors) + Polars + e5-small + stdio.</span></li>
-        <li><span class="check"></span><span>Retrieval is right: BM25 + vector + RRF, reranking deferred behind a flag.</span></li>
-        <li><span class="check"></span><span>All five guardrails (G1–G5) ship.</span></li>
-        <li><span class="check"></span><span><code>draft_reply</code> rules (cite source, refuse injections, neutral tone, no AI banner) are right.</span></li>
-        <li><span class="check"></span><span>Dataset-choice defense (§3) holds up.</span></li>
-        <li><span class="check"></span><span>Production / Risks / Applicability framing (§12–§14) is the right shape.</span></li>
-        <li><span class="check"></span><span>OK to start coding.</span></li>
-      </ul>
-    </aside>
 
     <footer class="colophon">
       <div class="left">mcp-customer-support-tickets · design specification</div>
