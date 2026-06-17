@@ -12,6 +12,22 @@ dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
 - **Update** an existing ticket's fields by id; re-embeds and re-indexes so changes are immediately searchable.
 - **Delete** a ticket by id. Destructive and irreversible within the running store.
 
+## Models
+
+This server **does not call any LLM API** — there is no `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` to set. Generation (e.g. drafting a reply) is performed by the
+calling MCP client's own model (Claude in Claude Code / Desktop, GPT in Codex,
+etc.); the server only assembles grounded context and a scaffold for it.
+
+The one model that runs locally is for **retrieval embeddings**:
+
+| Purpose | Model | Where it runs | How to change it |
+|---|---|---|---|
+| Query + ticket embeddings (384-dim, multilingual EN+DE) | [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) | On-device via `sentence-transformers` (CPU or CUDA if available) | Edit `EMBEDDING_MODEL` in `src/mcp_cst/config.py`. Changing it invalidates the on-disk embedding cache and triggers a fresh ~62k-row embedding pass on next start. |
+
+First run downloads ~120 MB of model weights to the HuggingFace cache; all
+subsequent starts are offline and sub-second.
+
 ## Install
 
 Clone the repo somewhere stable and reference its absolute path in the commands below.

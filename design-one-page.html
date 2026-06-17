@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MCP Server · Customer Support Tickets — One-Page Design</title>
+<style>
+  @page { size: A4; margin: 8mm 10mm; }
+  :root {
+    --bg: #ffffff;
+    --ink: #11141a;
+    --ink-soft: #2c313a;
+    --ink-mute: #5e636d;
+    --line: #e2ddcf;
+    --line-strong: #c9c2af;
+    --accent: #a8551c;
+    --accent-soft: #f5ead4;
+    --code-bg: #f5f1e6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 7.9pt/1.32 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  header.hero {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    border-bottom: 1.2px solid var(--ink);
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+  header .lockup { display: flex; align-items: center; gap: 7px; }
+  header .dot {
+    width: 11px; height: 11px; border-radius: 3px;
+    background: linear-gradient(135deg, var(--accent) 0%, #6e3812 100%);
+  }
+  header h1 {
+    font-size: 12.5pt; line-height: 1.1; margin: 0;
+    letter-spacing: -0.01em; font-weight: 700;
+  }
+  header .meta {
+    font-size: 6.7pt; color: var(--ink-mute);
+    text-align: right; line-height: 1.35;
+  }
+  header .meta strong { color: var(--ink-soft); font-weight: 600; }
+
+  .lede {
+    font-size: 8.1pt; color: var(--ink-soft);
+    margin: 0 0 6px; line-height: 1.36;
+  }
+
+  h2 {
+    font-size: 7.4pt;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    margin: 5px 0 3px;
+    color: var(--accent);
+    font-weight: 700;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 1px;
+  }
+  p { margin: 0 0 3px; color: var(--ink-soft); }
+  ul { margin: 0 0 3px; padding-left: 11px; color: var(--ink-soft); }
+  li { margin: 0.5px 0; }
+  strong { color: var(--ink); font-weight: 600; }
+  em { font-style: italic; color: var(--ink-soft); }
+
+  code {
+    font: 7.2pt/1.25 ui-monospace, "SF Mono", Consolas, monospace;
+    background: var(--code-bg);
+    padding: 0 2.5px;
+    border-radius: 2px;
+    color: var(--ink);
+  }
+
+  .pipeline {
+    background: var(--accent-soft);
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    padding: 3.5px 7px;
+    margin: 2px 0 4px;
+    font-size: 7.5pt;
+    line-height: 1.38;
+    color: var(--ink);
+  }
+  .arrow { color: var(--accent); font-weight: 700; padding: 0 2px; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 7.1pt;
+    margin: 0 0 2px;
+    line-height: 1.3;
+  }
+  th, td {
+    text-align: left;
+    padding: 1.5px 5px 1.5px 0;
+    vertical-align: top;
+    color: var(--ink-soft);
+    border-bottom: 1px dotted var(--line);
+  }
+  th {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 6.9pt;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  tr:last-child td { border-bottom: none; }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+  }
+  .grid2 > section { break-inside: avoid; }
+
+  footer.colophon {
+    margin-top: 5px;
+    padding-top: 3px;
+    border-top: 1px solid var(--line);
+    font-size: 6.4pt;
+    color: var(--ink-mute);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 6pt;
+    padding: 0 4px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--accent);
+    background: var(--accent-soft);
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    vertical-align: 1px;
+  }
+</style>
+</head>
+<body>
+
+  <header class="hero">
+    <div class="lockup">
+      <span class="dot"></span>
+      <h1>MCP Server &middot; Customer Support Tickets</h1>
+    </div>
+    <div class="meta">
+      <div><strong>Author</strong> Tal &nbsp;&middot;&nbsp; <strong>Stack</strong> Python &middot; FastMCP &middot; LanceDB</div>
+      <div><strong>Dataset</strong> Tobi-Bueck/customer-support-tickets (~62k EN+DE) &nbsp;&middot;&nbsp; <strong>Transport</strong> stdio</div>
+    </div>
+  </header>
+
+  <p class="lede">
+    A local Model Context Protocol server that lets Claude Code, Codex, and Claude Desktop answer natural-language questions
+    about a ~62,000-ticket support corpus &mdash; with hybrid retrieval, verbatim citations, and a grounded draft-reply prompt
+    assembled entirely on-device.
+  </p>
+
+  <section>
+    <h2>Design &mdash; What's built and how it answers questions</h2>
+    <div class="pipeline">
+      <strong>Query</strong> <span class="arrow">&rarr;</span>
+      BM25 (top 50) <span class="arrow">&#10070;</span> vector kNN over <code>e5-small</code> embeddings (top 50)
+      <span class="arrow">&rarr;</span> Reciprocal Rank Fusion <span class="arrow">&rarr;</span>
+      top 10 previews + <code>ticket://{id}</code> citations <span class="arrow">&rarr;</span>
+      client LLM reasons over snippets and (optionally) drafts a reply.
+    </div>
+    <p>
+      One Python process exposes the dataset to any MCP client over stdio. Rows, BM25 index, and 384-dim vectors live together
+      in <strong>LanceDB</strong>; aggregations run zero-copy through <strong>Polars</strong> over Arrow. Stable 12-char ticket
+      ids are derived from <code>sha1(revision || row_index)</code> so citations survive across sessions and machines.
+    </p>
+    <table>
+      <tr><th style="width:22%">Surface</th><th style="width:11%">Kind</th><th>Purpose</th></tr>
+      <tr><td><code>search_tickets</code></td><td>Tool</td><td>Hybrid BM25 + vector + RRF, with filters (queue, priority, language, type, tags)</td></tr>
+      <tr><td><code>get_ticket(id)</code></td><td>Tool</td><td>Returns one ticket, verbatim, every column</td></tr>
+      <tr><td><code>aggregate_tickets</code></td><td>Tool</td><td>Counts grouped by queue / priority / language / type / tags</td></tr>
+      <tr><td><code>create / update / delete_ticket</code></td><td>Tools</td><td>Local CRUD; re-embeds on write so changes are immediately searchable</td></tr>
+      <tr><td><code>server_info</code></td><td>Tool</td><td>Revision pin, embedding model id, row count, license</td></tr>
+      <tr><td><code>ticket://{id}</code>, <code>schema://tickets</code></td><td>Resources</td><td>Citation handles and column-value catalog</td></tr>
+      <tr><td><code>draft_reply</code></td><td>Prompt</td><td>Target ticket + up to 5 grounding neighbours (cosine &ge; 0.70) + type-aware scaffold; <em>client's</em> LLM writes the reply</td></tr>
+    </table>
+  </section>
+
+  <div class="grid2">
+
+    <section>
+      <h2>Why &mdash; The solution that fits this dataset</h2>
+      <p><strong>This dataset.</strong> Messy free text, bilingual (EN+DE), no timestamps, no ids. A churn-style tabular set reduces to text-to-SQL; <em>this</em> corpus forces the interesting choices &mdash; retrieval architecture, multilingual embeddings, grounded generation &mdash; and every row ships with the human support <code>answer</code>, giving <code>draft_reply</code> real prior replies to anchor on.</p>
+      <p><strong>Hybrid retrieval.</strong> BM25 wins on literal tokens (error codes, SKUs); vector wins on paraphrase (&ldquo;login broken&rdquo; &asymp; &ldquo;can't sign in&rdquo;). RRF merges by rank position &mdash; no score normalisation, no weights to tune.</p>
+      <p><strong>LanceDB + e5-small.</strong> One embedded columnar store holds rows, BM25, and vectors; scales to 100M+ on the same API. <code>multilingual-e5-small</code> (384-dim) is free, local, multilingual.</p>
+      <p><strong>Deliberately avoided.</strong> Cross-encoder reranking (small win when an LLM re-reads snippets anyway); HyDE / query rewriting (upstream LLM already phrases well); chunking (tickets are 100&ndash;2200 chars &mdash; embed whole); remote HTTP + OAuth (local stdio is the assignment); server-side LLM calls (no API-key dependency).</p>
+    </section>
+
+    <section>
+      <h2>Production deltas &mdash; What changes for real</h2>
+      <ul>
+        <li><strong>Live source &amp; incremental index.</strong> Real ticketing system instead of the pinned HF snapshot; periodic delta-ingest, not full re-embed.</li>
+        <li><strong>Remote transport + OAuth 2.1.</strong> Streamable HTTP, audience-bound tokens, multi-tenant isolation (tenant id partitions the vector index).</li>
+        <li><strong>Reranker on by default.</strong> <code>bge-reranker-base</code> once retrieval feeds real workflows.</li>
+        <li><strong>Upgrade embeddings</strong> to <code>bge-m3</code> on a small GPU for stronger multilingual (incl. Hebrew) coverage.</li>
+        <li><strong>PII redaction</strong> at ingest (email, phone, IBAN, names) &mdash; deferred for the public demo set.</li>
+        <li><strong>Eval harness.</strong> 50&ndash;200 golden queries with expected ids; precision@5 tracked per deploy.</li>
+        <li><strong>Observability.</strong> Structured logs, traces, p95 latency &amp; retrieval-quality dashboards; per-tenant rate limits.</li>
+        <li><strong>Supply chain.</strong> Reproducible builds, signed images, CVE gating, model-artifact pinning.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Risks &mdash; What goes wrong, and how it's prevented</h2>
+      <table>
+        <tr><th style="width:36%">Risk</th><th>Mitigation</th></tr>
+        <tr><td>Hallucinated tickets</td><td>Read endpoints return dataset bytes verbatim; server never calls an LLM; <code>draft_reply</code> only assembles context + scaffold.</td></tr>
+        <tr><td>Prompt injection via ticket bodies</td><td>Content wrapped in <code>&lt;ticket&gt;</code> tags; tool descriptions label inner text as data; <code>draft_reply</code> rejects injection-shaped inputs.</td></tr>
+        <tr><td>Dataset drift</td><td>HF revision pin embedded in every <code>ticket://</code> URI and the embedding cache key; re-index triggers on revision change.</td></tr>
+        <tr><td>Confident answers from weak matches</td><td>Return relevance scores + snippets, not just ids; fail loud on unsupported filters (e.g. dates &mdash; no timestamp column); precision@5 in prod.</td></tr>
+        <tr><td>License (CC-BY-NC-4.0)</td><td>Surfaced in <code>server_info</code> and README; production swaps to a licensed or owned corpus.</td></tr>
+        <tr><td>Cross-lingual quality (e.g. Hebrew)</td><td>Documented limitation; one-line upgrade path to <code>bge-m3</code>.</td></tr>
+        <tr><td>First-run latency (~2 min embed pass)</td><td>Progress via MCP <code>notifications/progress</code>; cached on disk by revision + model id; sub-second on subsequent starts.</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Business impact &mdash; How this creates value at CHEQ</h2>
+      <p>The pattern &mdash; <em>hybrid retrieval over a text-rich corpus, grounded generation with verbatim citations, exposed through MCP</em> &mdash; is the integration layer for putting internal data under one trustworthy contract across every downstream AI workflow.</p>
+      <ul>
+        <li><strong>Fraud-incident triage <span class="tag">direct fit</span>.</strong> Same architecture, different corpus: BM25 catches exact indicators (IPs, hashes, domains, error codes); vectors catch behavioural patterns described in analyst prose. Analyst chats <em>&ldquo;find prior incidents matching this pattern from the same IP range&rdquo;</em>, every cited incident a real record.</li>
+        <li><strong>Support &amp; CSM copilot.</strong> Pointed at CHEQ's real ticket / Slack / Salesforce history: <em>&ldquo;find prior tickets where a customer hit error X on integration Y&rdquo;</em>, <em>&ldquo;draft a reply matching how we resolved it last time&rdquo;</em> &mdash; every claim traceable.</li>
+        <li><strong>Threat-intel &amp; rules knowledge base.</strong> Detection rules, intel notes, fraud playbooks searchable under the same grounding contract &mdash; instead of N one-off RAG bolt-ons.</li>
+        <li><strong>Why MCP.</strong> Build the server once, plug it into Claude Code, Codex, Cursor, internal agents. MCP makes grounded retrieval <em>composable</em> across the company; the alternative is each team re-solving hallucination, citation, and access control alone.</li>
+      </ul>
+    </section>
+
+  </div>
+
+  <footer class="colophon">
+    <div>mcp-customer-support-tickets &nbsp;&middot;&nbsp; one-page design specification</div>
+    <div>Tal &nbsp;&middot;&nbsp; 2026</div>
+  </footer>
+
+</body>
+</html>
