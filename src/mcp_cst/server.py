@@ -17,9 +17,12 @@ from .prompts import draft_reply as draft_reply_module
 from .resources import schema as schema_module
 from .resources import ticket as ticket_module
 from .tools import aggregate_tickets as aggregate_tickets_module
+from .tools import create_ticket as create_ticket_module
+from .tools import delete_ticket as delete_ticket_module
 from .tools import get_ticket as get_ticket_module
 from .tools import search_tickets as search_tickets_module
 from .tools import server_info as server_info_module
+from .tools import update_ticket as update_ticket_module
 
 
 log = logging.getLogger(__name__)
@@ -79,6 +82,12 @@ def get_query_embedder() -> EmbedFn:
     if _EMBED_QUERIES is None:
         _init()
     return _EMBED_QUERIES  # type: ignore[return-value]
+
+
+def get_passage_embedder() -> EmbedFn:
+    if _EMBED_PASSAGES is None:
+        _init()
+    return _EMBED_PASSAGES  # type: ignore[return-value]
 
 
 def _init() -> None:
@@ -167,6 +176,61 @@ def aggregate_tickets(
         group_by=group_by, queue=queue, priority=priority, language=language,
         type=type, tags=tags, tags_mode=tags_mode,
     )
+
+
+# --- create_ticket --------------------------------------------------------
+
+@mcp.tool(description=create_ticket_module.DESCRIPTION)
+def create_ticket(
+    subject: Annotated[str, Field(description="Ticket subject line. Required, non-empty.")],
+    body: Annotated[str, Field(description="Ticket body text. Required, non-empty.")],
+    answer: Annotated[str, Field(description="Optional resolved answer if the ticket already has one. Empty by default.")] = "",
+    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Optional ticket type.")] = None,
+    queue: Annotated[str | None, Field(description="Optional queue. Any string — schema://tickets lists the 52 dataset values.")] = None,
+    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Optional priority.")] = None,
+    language: Annotated[Literal["en", "de"] | None, Field(description="Optional language tag.")] = None,
+    version: Annotated[str, Field(description="Optional product/version label. Empty by default.")] = "",
+    tags: Annotated[list[str] | None, Field(description="Optional list of tags (already normalized — non-empty strings only).")] = None,
+) -> dict:
+    return create_ticket_module.create_ticket_impl(
+        get_store(), get_passage_embedder(),
+        subject=subject, body=body, answer=answer,
+        type=type or "", queue=queue or "", priority=priority or "",
+        language=language or "", version=version, tags=tags,
+    )
+
+
+# --- update_ticket --------------------------------------------------------
+
+@mcp.tool(description=update_ticket_module.DESCRIPTION)
+def update_ticket(
+    ticket_id: Annotated[str, Field(description="12-char id of the ticket to update.")],
+    subject: Annotated[str | None, Field(description="New subject. Omit to keep current.")] = None,
+    body: Annotated[str | None, Field(description="New body text. Omit to keep current.")] = None,
+    answer: Annotated[str | None, Field(description="New answer text. Omit to keep current.")] = None,
+    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="New ticket type. Omit to keep current.")] = None,
+    queue: Annotated[str | None, Field(description="New queue. Omit to keep current.")] = None,
+    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="New priority. Omit to keep current.")] = None,
+    language: Annotated[Literal["en", "de"] | None, Field(description="New language. Omit to keep current.")] = None,
+    version: Annotated[str | None, Field(description="New version label. Omit to keep current.")] = None,
+    tags: Annotated[list[str] | None, Field(description="New tag list (replaces all). Omit to keep current.")] = None,
+) -> dict:
+    return update_ticket_module.update_ticket_impl(
+        get_store(), get_passage_embedder(),
+        ticket_id=ticket_id,
+        subject=subject, body=body, answer=answer, type=type,
+        queue=queue, priority=priority, language=language,
+        version=version, tags=tags,
+    )
+
+
+# --- delete_ticket --------------------------------------------------------
+
+@mcp.tool(description=delete_ticket_module.DESCRIPTION)
+def delete_ticket(
+    ticket_id: Annotated[str, Field(description="12-char id of the ticket to delete. Confirm with the user first — deletion is irreversible.")],
+) -> dict:
+    return delete_ticket_module.delete_ticket_impl(get_store(), ticket_id)
 
 
 # --- draft_reply prompt --------------------------------------------------

@@ -10,7 +10,7 @@ DESCRIPTION = make_description(
     summary="Schema for the ticket corpus: columns, valid filter values, and notes on what is NOT available.",
     use_for="Use this for: discovering valid filter values before calling search_tickets or aggregate_tickets, understanding the data shape.",
     not_for="Do NOT use this for: fetching ticket content (use get_ticket or ticket:// resource).",
-    output="Output: JSON with `columns`, `valid_filters`, and `not_available` sections.",
+    output="Output: JSON with `columns`, `valid_filters`, `not_available`, and `writes` sections.",
     include_g4=False,
 )
 
@@ -40,6 +40,11 @@ def schema_payload() -> dict:
             "No timestamp column — date-range filters will be refused.",
             "No customer fields (name, email, id) — cannot filter by customer.",
             "No ticket-id column from source — server fabricates stable ids.",
+        ],
+        "writes": [
+            "create_ticket: append one ticket (subject + body required; answer, type, queue, priority, language, version, tags optional). Returns {id}. The id is derived from the next available row_index using the same scheme as ingest. New tickets live in the per-revision cache and survive restarts.",
+            "update_ticket: patch one ticket by id; unspecified fields are left alone; `tags` replaces the full list. Re-embeds and re-indexes. Returns {id, updated}. TICKET_NOT_FOUND if id is unknown.",
+            "delete_ticket: remove one ticket by id. Returns {id, deleted}. Destructive and irreversible within the running store. TICKET_NOT_FOUND if id is unknown.",
         ],
     }
 

@@ -1,5 +1,15 @@
 import pytest
-from mcp_cst.safety import wrap_ticket, looks_like_injection
+from mcp_cst.safety import escape_text, wrap_ticket, looks_like_injection
+
+
+def test_escape_text_basic():
+    assert escape_text("A & B") == "A &amp; B"
+    assert escape_text("<x>") == "&lt;x&gt;"
+
+
+def test_escape_text_tolerates_none():
+    # Pre-fix stores can contain null cells; the prompt paths must not crash.
+    assert escape_text(None) == ""
 
 
 def test_wrap_ticket_basic():

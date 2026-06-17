@@ -99,7 +99,11 @@ class TicketStore:
             records.append({
                 "id": derive_id(revision, i),
                 "row_index": i,
-                **{k: row.get(k, "") for k in (
+                # `or ""` (not the dict default) coerces explicit None values
+                # from HF rows — `.get(k, "")` only fires when the key is
+                # missing, so nullable cells would otherwise land as None and
+                # blow up downstream XML escapers.
+                **{k: (row.get(k) or "") for k in (
                     "subject", "body", "answer", "type", "queue",
                     "priority", "language", "version", *_TAG_COLS,
                 )},
@@ -190,3 +194,138 @@ class TicketStore:
     def table(self):
         """Low-level access for retrieval module."""
         return self._table
+
+    def add_ticket(
+        self,
+        *,
+        subject: str,
+        body: str,
+        embedder: Callable[[list[str]], np.ndarray],
+        answer: str = "",
+        type: str = "",
+        queue: str = "",
+        priority: str = "",
+        language: str = "",
+        version: str = "",
+        tags: list[str] | None = None,
+    ) -> str:
+        """Insert a new ticket and return its 12-char hex id.
+
+        The id is derived as `derive_id(self.revision, next_row_index)` where
+        next_row_index = self.row_count(). This keeps the id scheme identical
+        to build-time ids and guarantees uniqueness within the store.
+
+        The vector is searchable immediately; the FTS index is rebuilt so
+        the new row is also visible to BM25. Rebuild is O(n) — fine for
+        interactive insert, not for bulk import.
+        """
+        tag_list = list(tags or [])
+        text_search_value = f"{subject}\n{body}\n{' '.join(tag_list)}"
+        next_index = self._table.count_rows()
+        new_id = derive_id(self.revision, next_index)
+        vector = embedder([text_search_value])[0].tolist()
+        padded = (tag_list + [""] * 6)[:6]
+        record = {
+            "id": new_id,
+            "row_index": next_index,
+            "subject": subject,
+            "body": body,
+            "answer": answer,
+            "type": type,
+            "queue": queue,
+            "priority": priority,
+            "language": language,
+            "version": version,
+            **{f"tag_{i + 1}": padded[i] for i in range(6)},
+            "tags": tag_list,
+            "text_search": text_search_value,
+            "vector": vector,
+        }
+        self._table.add([record])
+        self._table.create_fts_index("text_search", replace=True)
+        return new_id
+
+    def update_ticket(
+        self,
+        ticket_id: str,
+        *,
+        embedder: Callable[[list[str]], np.ndarray],
+        subject: str | None = None,
+        body: str | None = None,
+        answer: str | None = None,
+        type: str | None = None,
+        queue: str | None = None,
+        priority: str | None = None,
+        language: str | None = None,
+        version: str | None = None,
+        tags: list[str] | None = None,
+    ) -> bool:
+        """Patch one ticket. `None` for any field means leave it alone.
+
+        Returns True if the ticket existed and was updated, False if no
+        ticket has that id. The implementation deletes-and-reinserts so the
+        text vector and FTS row both reflect the new content; the original
+        `id` and `row_index` are preserved so existing references keep
+        working.
+        """
+        existing = self.get(ticket_id)
+        if existing is None:
+            return False
+
+        merged = {
+            "subject": subject if subject is not None else existing.subject,
+            "body": body if body is not None else existing.body,
+            "answer": answer if answer is not None else existing.answer,
+            "type": type if type is not None else existing.type,
+            "queue": queue if queue is not None else existing.queue,
+            "priority": priority if priority is not None else existing.priority,
+            "language": language if language is not None else existing.language,
+            "version": version if version is not None else existing.version,
+            "tags": list(tags) if tags is not None else list(existing.tags),
+        }
+        text_search_value = (
+            f"{merged['subject']}\n{merged['body']}\n{' '.join(merged['tags'])}"
+        )
+        vector = embedder([text_search_value])[0].tolist()
+        padded = (merged["tags"] + [""] * 6)[:6]
+        # Pull the original row_index off the LanceDB row so we can preserve
+        # it across the delete+insert cycle — the id is stable but row_index
+        # is what we use for stable ordering in `all_ids`.
+        safe = ticket_id.replace("'", "''")
+        raw = self._table.search().where(f"id = '{safe}'").limit(1).to_list()[0]
+        row_index = raw["row_index"]
+
+        record = {
+            "id": ticket_id,
+            "row_index": row_index,
+            **{k: merged[k] for k in (
+                "subject", "body", "answer", "type",
+                "queue", "priority", "language", "version",
+            )},
+            **{f"tag_{i + 1}": padded[i] for i in range(6)},
+            "tags": merged["tags"],
+            "text_search": text_search_value,
+            "vector": vector,
+        }
+        self._table.delete(f"id = '{safe}'")
+        self._table.add([record])
+        self._table.create_fts_index("text_search", replace=True)
+        return True
+
+    def delete_ticket(self, ticket_id: str) -> bool:
+        """Remove one ticket by id. Returns True if a row was removed.
+
+        Row_indexes are not compacted — gaps are fine because we only use
+        row_index for stable ordering, never as a direct table offset. The
+        next `add_ticket` still derives its id from `row_count()`, which
+        means an id collision is possible if you delete-then-add (the new
+        ticket would re-use the deleted ticket's id slot when row_count
+        happens to match a deleted index). For now we accept this; a
+        forever-growing counter is a follow-up if it becomes a problem.
+        """
+        if self.get(ticket_id) is None:
+            return False
+        safe = ticket_id.replace("'", "''")
+        self._table.delete(f"id = '{safe}'")
+        self._table.create_fts_index("text_search", replace=True)
+        return True

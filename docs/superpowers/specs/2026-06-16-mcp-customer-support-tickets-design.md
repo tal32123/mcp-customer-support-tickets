@@ -433,3 +433,53 @@ Every error code from §9 appears in the docstring of the tool that raises it, w
 ## 17. Approval
 
 This spec consolidates the design.html and the 2026-06-16 brainstorming session decisions. On user approval, hand off to `superpowers:writing-plans` to produce the implementation plan.
+
+## Addendum — create_ticket tool (2026-06-17)
+
+Added a `create_ticket` MCP tool to let clients append tickets to the running
+store. Required inputs: `subject`, `body`. Optional: `answer`, `type`, `queue`,
+`priority`, `language`, `version`, `tags`. Returns `{"id": "<12-char hex>"}`.
+
+Constraints honoured:
+- No outbound LLM call — the local sentence-transformers passage embedder
+  (already loaded for ingest) is reused to vectorize the new row.
+- Same id scheme as ingest: `derive_id(revision, next_row_index)`. Uniqueness
+  follows from row_index uniqueness.
+- FTS index is rebuilt after insert so the new row is immediately findable
+  via BM25 as well as vector search.
+- Inputs are screened with `looks_like_injection` and a non-empty check;
+  failures raise `INJECTION_DETECTED` and `INVALID_INPUT` respectively.
+
+Persistence: new rows live in the per-revision cache directory. A revision
+bump invalidates the cache and re-ingests from HF — any locally-created
+tickets in the old cache directory are lost. This is intentional: the cache
+is treated as derived state per spec §3.
+
+## Addendum — update_ticket and delete_ticket tools (2026-06-17)
+
+Added two more write tools so the store is a true CRUD surface:
+
+- `update_ticket(ticket_id, [subject], [body], [answer], [type], [queue], [priority], [language], [version], [tags])` —
+  patches one ticket. None for any field leaves it alone. `tags` is a full
+  replacement (no merge). Implementation deletes-and-reinserts with the
+  same `id` and `row_index` preserved, so existing references and the
+  stable-ordering contract from `all_ids` keep working. The text vector
+  is recomputed on every call (deliberately uniform — cheaper than
+  conditionally re-embedding only on text changes). FTS is rebuilt so
+  the new text is searchable. Returns `{id, updated}`. Unknown id raises
+  `TICKET_NOT_FOUND`.
+
+- `delete_ticket(ticket_id)` — removes one row. Returns `{id, deleted}`.
+  Unknown id raises `TICKET_NOT_FOUND`. Destructive and irreversible
+  within the running store; row_indexes are NOT compacted, so the freed
+  slot is not reused for future inserts. There is a known sharp edge:
+  because `create_ticket` derives the new id from `row_count()`, certain
+  delete-then-create sequences can produce id collisions with previously
+  deleted tickets. Acceptable for v1; a forever-growing counter is the
+  follow-up if it becomes a problem.
+
+Both tools honour the same constraints as `create_ticket`: no outbound
+LLM, local sentence-transformers passage embedder reused, inputs
+screened with `looks_like_injection` and non-blank checks where
+applicable. Persistence story is unchanged: edits live in the
+per-revision cache and survive restarts unless the revision is bumped.

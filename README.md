@@ -1,6 +1,6 @@
 # mcp-customer-support-tickets
 
-A read-only Model Context Protocol (MCP) server that exposes the
+A Model Context Protocol (MCP) server that exposes the
 [Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets)
 dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
 
@@ -8,6 +8,9 @@ dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
 - **Fetch** any ticket verbatim by id.
 - **Aggregate** counts by queue, priority, language, type, or tags.
 - **Assemble** a grounded draft-reply prompt: target ticket + up to 5 prior tickets+answers (cosine >= 0.70) + a type-aware scaffold the caller's LLM fills in. No API key needed.
+- **Create** new tickets locally (subject + body + optional metadata) and get back a stable 12-char id; they're immediately searchable. No LLM is invoked on the server — pass already-composed text.
+- **Update** an existing ticket's fields by id; re-embeds and re-indexes so changes are immediately searchable.
+- **Delete** a ticket by id. Destructive and irreversible within the running store.
 
 ## Install
 
@@ -70,6 +73,8 @@ The first time the server starts, it downloads the embedding model
 (~120 MB) and the HF Parquet, then runs an embedding pass over ~62k
 tickets (~2 min on CPU). Everything is cached on disk, keyed by
 dataset revision and model id. Subsequent starts are sub-second.
+
+New tickets created via `create_ticket` (and edits via `update_ticket` / `delete_ticket`) are written into the same per-revision cache directory and persist across restarts. Bumping `MCP_CST_DATASET_REVISION` invalidates the cache and triggers a fresh ingest — any locally-created tickets in the old cache are not migrated.
 
 ## License
 

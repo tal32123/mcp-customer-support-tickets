@@ -72,3 +72,101 @@ def test_get_escapes_quotes_in_id(store):
     # and return an arbitrary row. With escaping, no rows match.
     assert store.get("x' OR '1'='1") is None
     assert store.get("'; DROP TABLE tickets; --") is None
+
+
+def test_add_ticket_round_trip(store):
+    new_id = store.add_ticket(
+        subject="Fresh subject",
+        body="Fresh body content",
+        embedder=fake_embed,
+        queue="Technical Support",
+        priority="high",
+        language="en",
+        type="incident",
+        tags=["Display", "Hardware"],
+    )
+    assert len(new_id) == 12
+    assert all(c in "0123456789abcdef" for c in new_id)
+    rec = store.get(new_id)
+    assert rec is not None
+    assert rec.subject == "Fresh subject"
+    assert rec.body == "Fresh body content"
+    assert rec.queue == "Technical Support"
+    assert rec.tags == ["Display", "Hardware"]
+    assert rec.tag_1 == "Display"
+    assert rec.tag_2 == "Hardware"
+    assert rec.tag_3 == ""
+
+
+def test_add_ticket_increments_row_count(store, raw_ticket_rows):
+    before = store.row_count()
+    store.add_ticket(subject="s", body="b", embedder=fake_embed)
+    assert store.row_count() == before + 1
+
+
+def test_add_ticket_unique_ids(store):
+    a = store.add_ticket(subject="alpha", body="one", embedder=fake_embed)
+    b = store.add_ticket(subject="beta", body="two", embedder=fake_embed)
+    assert a != b
+
+
+def test_update_ticket_changes_fields(store):
+    new_id = store.add_ticket(
+        subject="Initial", body="Initial body", embedder=fake_embed,
+        queue="Customer Service", priority="low",
+    )
+    changed = store.update_ticket(
+        new_id, embedder=fake_embed,
+        subject="Updated subject", priority="high",
+    )
+    assert changed is True
+    rec = store.get(new_id)
+    assert rec.subject == "Updated subject"
+    assert rec.body == "Initial body"  # untouched fields preserved
+    assert rec.queue == "Customer Service"
+    assert rec.priority == "high"
+
+
+def test_update_ticket_unknown_id_returns_false(store):
+    assert store.update_ticket("nonexistent0", embedder=fake_embed, subject="x") is False
+
+
+def test_update_ticket_replaces_tags(store):
+    new_id = store.add_ticket(
+        subject="s", body="b", embedder=fake_embed, tags=["A", "B", "C"],
+    )
+    store.update_ticket(new_id, embedder=fake_embed, tags=["X"])
+    rec = store.get(new_id)
+    assert rec.tags == ["X"]
+    assert rec.tag_1 == "X"
+    assert rec.tag_2 == ""
+
+
+def test_delete_ticket_removes_row(store):
+    new_id = store.add_ticket(subject="bye", body="bye", embedder=fake_embed)
+    before = store.row_count()
+    assert store.delete_ticket(new_id) is True
+    assert store.row_count() == before - 1
+    assert store.get(new_id) is None
+
+
+def test_delete_ticket_unknown_id_returns_false(store):
+    before = store.row_count()
+    assert store.delete_ticket("nonexistent0") is False
+    assert store.row_count() == before
+
+
+def test_ingest_coerces_null_fields(tmp_path):
+    """Regression: HF rows with None values must not poison the store."""
+    rows = [
+        {"subject": "ok", "body": "ok", "answer": None, "type": None,
+         "queue": "Q", "priority": "low", "language": "en", "version": None,
+         "tag_1": "", "tag_2": "", "tag_3": "", "tag_4": "", "tag_5": "", "tag_6": ""},
+    ]
+    s = TicketStore.create(
+        path=tmp_path / "null-store", revision="r", rows=rows, embedder=fake_embed,
+    )
+    rec = s.get(s.all_ids()[0])
+    assert rec.answer == ""
+    assert rec.type == ""
+    assert rec.version == ""
