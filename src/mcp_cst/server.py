@@ -143,12 +143,10 @@ def search_tickets(
     tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = ticket must contain ALL listed tags; 'or' = ANY of them.")] = "and",
     limit: Annotated[int, Field(description="Max hits to return. Default 10, hard cap 50.")] = 10,
 ) -> list[dict]:
-    cfg = get_config()
     return search_tickets_module.search_tickets_impl(
         get_store(), get_query_embedder(),
         q=q, queue=queue, priority=priority, language=language, type=type,
         tags=tags, tags_mode=tags_mode, limit=limit,
-        rerank_enabled=cfg.rerank_enabled,
     )
 
 

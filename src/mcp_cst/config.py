@@ -22,7 +22,6 @@ class Config:
     embedding_model: str
     embedding_dim: int
     cache_root: Path
-    rerank_enabled: bool
 
     @property
     def store_path(self) -> Path:
@@ -35,13 +34,10 @@ class Config:
         cache_override = os.environ.get("MCP_CST_CACHE_DIR")
         cache_root = Path(cache_override) if cache_override else Path(platformdirs.user_cache_dir(CACHE_APPNAME))
 
-        rerank = os.environ.get("RERANK", "").lower() == "true"
-
         return cls(
             dataset_id=DATASET_ID,
             dataset_revision=os.environ.get("MCP_CST_DATASET_REVISION", DEFAULT_REVISION),
             embedding_model=EMBEDDING_MODEL,
             embedding_dim=EMBEDDING_DIM,
             cache_root=cache_root,
-            rerank_enabled=rerank,
         )

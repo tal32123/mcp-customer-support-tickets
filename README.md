@@ -9,17 +9,39 @@ dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
 - **Aggregate** counts by queue, priority, language, type, or tags.
 - **Assemble** a grounded draft-reply prompt: target ticket + up to 5 prior tickets+answers (cosine >= 0.70) + a type-aware scaffold the caller's LLM fills in. No API key needed.
 
-## Install (via MCP client)
+## Install
+
+Clone the repo somewhere stable and reference its absolute path in the commands below.
+
+### Claude Code (CLI, no JSON editing)
+
+```sh
+claude mcp add customer-support-tickets --scope user \
+  -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
+```
+
+Drop `--scope user` for cwd-only. Verify with `claude mcp list`.
+
+### Codex CLI
+
+Add this block to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.customer-support-tickets]
+command = "uv"
+args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+```
+
+### Claude Desktop (and any other JSON-config client)
+
+Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
 
 ```json
 {
   "mcpServers": {
     "customer-support-tickets": {
-      "command": "uvx",
-      "args": ["mcp-customer-support-tickets"],
-      "env": {
-        "MCP_CST_DATASET_REVISION": "main"
-      }
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
     }
   }
 }
@@ -39,9 +61,8 @@ uv run pytest                          # tests
 
 | Var | Required | Purpose |
 |---|---|---|
-| `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. |
-| `MCP_CST_CACHE_DIR` | no | Override cache dir. |
-| `RERANK` | no | `true` enables cross-encoder rerank (deferred; stub for now). |
+| `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. Defaults to `main`. |
+| `MCP_CST_CACHE_DIR` | no | Override cache dir. Defaults to `platformdirs.user_cache_dir("mcp-customer-support-tickets")`. |
 
 ## First-run notes
 

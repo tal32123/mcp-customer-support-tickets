@@ -6,25 +6,16 @@ from mcp_cst.config import Config
 def test_defaults(monkeypatch, tmp_path):
     monkeypatch.delenv("MCP_CST_DATASET_REVISION", raising=False)
     monkeypatch.delenv("MCP_CST_CACHE_DIR", raising=False)
-    monkeypatch.delenv("RERANK", raising=False)
     cfg = Config.from_env()
     assert cfg.dataset_id == "Tobi-Bueck/customer-support-tickets"
     assert cfg.dataset_revision  # baked-in default
     assert cfg.embedding_model == "intfloat/multilingual-e5-small"
-    assert cfg.rerank_enabled is False
 
 
 def test_cache_dir_override(monkeypatch, tmp_path):
     monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path))
     cfg = Config.from_env()
     assert cfg.cache_root == tmp_path
-
-
-def test_rerank_flag(monkeypatch):
-    monkeypatch.setenv("RERANK", "true")
-    assert Config.from_env().rerank_enabled is True
-    monkeypatch.setenv("RERANK", "false")
-    assert Config.from_env().rerank_enabled is False
 
 
 def test_revision_override(monkeypatch):

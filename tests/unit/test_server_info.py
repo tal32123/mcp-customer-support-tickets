@@ -26,4 +26,3 @@ def test_payload_shape(store, monkeypatch):
     assert payload["row_count"] == store.row_count()
     assert payload["license"] == "CC-BY-NC-4.0"
     assert "package_version" in payload
-    assert payload["rerank_enabled"] is False

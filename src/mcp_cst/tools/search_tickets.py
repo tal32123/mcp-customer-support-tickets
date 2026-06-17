@@ -8,7 +8,6 @@ import numpy as np
 from ..data.store import TicketStore
 from ..docs import make_description
 from ..retrieval.hybrid import hybrid_search
-from ..retrieval.rerank import maybe_rerank
 
 
 HARD_CAP = 50
@@ -43,7 +42,6 @@ def search_tickets_impl(
     tags: list[str] | None = None,
     tags_mode: Literal["and", "or"] = "and",
     limit: int = 10,
-    rerank_enabled: bool = False,
 ) -> list[dict]:
     filters: dict = {}
     if queue is not None: filters["queue"] = queue
@@ -55,7 +53,6 @@ def search_tickets_impl(
 
     capped = max(1, min(limit, HARD_CAP))
     hits = hybrid_search(store, query=q, filters=filters, embedder=embedder, limit=capped)
-    hits = maybe_rerank(query=q, hits=hits, enabled=rerank_enabled)
     for h in hits:
         h["ticket_uri"] = f"ticket://{h['id']}"
     return hits

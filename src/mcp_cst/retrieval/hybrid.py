@@ -83,11 +83,6 @@ def hybrid_search(
 
     fused_ids = reciprocal_rank_fusion([bm25_ids, vec_ids])[:limit]
 
-    # Build by-id lookup from candidates we already fetched. RRF only sees
-    # ids we ranked, so every fused_id should be present -- but a future
-    # extension (e.g. a reranker that adds new ids) could violate that
-    # invariant. Skip rather than raise so the caller still gets useful
-    # results in the degraded case.
     by_id = {r["id"]: r for r in (*bm25_rows, *vec_rows)}
     out: list[dict] = []
     for ix, rid in enumerate(fused_ids):

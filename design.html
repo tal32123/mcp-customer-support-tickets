@@ -406,7 +406,6 @@
       <li><a href="#s5"><span class="num">05</span>Stack</a></li>
       <li><a href="#s6"><span class="num">06</span>Retrieval</a></li>
       <li><a href="#s7"><span class="num">07</span>Other languages</a></li>
-      <li><a href="#s8"><span class="num">08</span>Install</a></li>
       <li><a href="#s9"><span class="num">09</span>Revision pin</a></li>
       <li><a href="#s10"><span class="num">10</span>Guardrails</a></li>
       <li><a href="#s12"><span class="num">12</span>Production deltas</a></li>
@@ -598,7 +597,7 @@ sequenceDiagram
       <div class="card accent">
         <div class="label">Decision</div>
         <p style="margin: 0; color: var(--ink);">
-          <strong>Hybrid search from day one: BM25 + vector, merged with Reciprocal Rank Fusion.</strong> Vector store: LanceDB. Embeddings: multilingual-e5-small. Cross-encoder reranking is deferred behind a config flag.
+          <strong>Hybrid search from day one: BM25 + vector, merged with Reciprocal Rank Fusion.</strong> Vector store: LanceDB. Embeddings: multilingual-e5-small. Cross-encoder reranking is deferred.
         </p>
       </div>
 
@@ -664,24 +663,6 @@ flowchart TB
         <tr><td><code>dicta-il/neodictabert-bilingual-embed</code></td><td>Best for Hebrew</td><td>Hebrew + English only. Loses German.</td></tr>
       </table>
       <p class="footnote">This dataset has no Hebrew tickets, so the question only matters for cross-lingual queries or reusing the architecture later.</p>
-    </section>
-
-    <section class="s" id="s8">
-      <p class="s-eyebrow">08 · Install</p>
-      <h2>One block in your MCP client's config</h2>
-      <p>For <strong>Claude Code</strong>, <strong>Codex</strong>, or <strong>Claude Desktop</strong>, the same MCP config shape applies. <code>uvx</code> downloads and runs the server automatically.</p>
-<pre><code>{
-  "mcpServers": {
-    "customer-support-tickets": {
-      "command": "uvx",
-      "args": ["mcp-customer-support-tickets"],
-      "env": {
-        "MCP_CST_DATASET_REVISION": "main"
-      }
-    }
-  }
-}</code></pre>
-      <p class="footnote">All retrieval, grounding, and scaffold assembly is local — no API key required. The calling MCP client's own LLM produces the final reply text.</p>
     </section>
 
     <section class="s" id="s9">
@@ -825,8 +806,7 @@ flowchart TB
 │   │   ├── aggregates.py     # Polars over Arrow for group-by counts
 │   │   └── ingest.py         # HF parquet → embedding pass → LanceDB
 │   ├── retrieval/
-│   │   ├── hybrid.py         # BM25 + vector + RRF
-│   │   └── rerank.py         # cross-encoder, behind RERANK=true (deferred)
+│   │   └── hybrid.py         # BM25 + vector + RRF
 │   ├── tools/                # search_tickets, get_ticket, aggregate_tickets
 │   ├── resources/            # ticket://, schema://
 │   └── prompts/              # draft_reply
@@ -842,11 +822,44 @@ flowchart TB
       <h3>Prerequisites</h3>
       <ul>
         <li><strong>Python 3.13</strong></li>
-        <li><strong><code>uv</code></strong> (<a href="https://docs.astral.sh/uv/">install</a>) — used for env management, dependency resolution, and the <code>uvx</code> launcher MCP clients invoke.</li>
+        <li><strong><code>uv</code></strong> (<a href="https://docs.astral.sh/uv/">install</a>) — env management, dependency resolution, and the <code>uv run</code> launcher MCP clients invoke.</li>
         <li>A working internet connection on first run (one-time downloads of the dataset Parquet and the embedding model).</li>
       </ul>
 
-      <h3>A · Local development</h3>
+      <p>Clone the repo somewhere stable and reference its absolute path in the snippets below.</p>
+
+      <h3>A · Claude Code (one-shot CLI)</h3>
+      <p>The <code>claude</code> CLI registers MCP servers without editing any JSON. <code>--scope user</code> makes the server available across every project; drop it for cwd-only. Everything after <code>--</code> is the spawn command.</p>
+<pre><code>claude mcp add customer-support-tickets --scope user \
+  -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
+
+# verify
+claude mcp list
+claude mcp get customer-support-tickets</code></pre>
+
+      <h3>B · Codex CLI</h3>
+      <p>Codex reads <code>~/.codex/config.toml</code>. Add a stanza under <code>[mcp_servers.&lt;name&gt;]</code>:</p>
+<pre><code>[mcp_servers.customer-support-tickets]
+command = "uv"
+args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]</code></pre>
+
+      <h3>C · Claude Desktop (and any other JSON-config client)</h3>
+      <p>Claude Desktop has no CLI — edit the config JSON directly:</p>
+      <ul>
+        <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
+        <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
+      </ul>
+<pre><code>{
+  "mcpServers": {
+    "customer-support-tickets": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+    }
+  }
+}</code></pre>
+      <p>Restart the app. The server's tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>), resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
+
+      <h3>D · Local development</h3>
       <p>Clone the repo and let <code>uv</code> handle the rest:</p>
 <pre><code># 1. clone
 git clone &lt;repo-url&gt; mcp-customer-support-tickets
@@ -862,51 +875,13 @@ uv run mcp-customer-support-tickets
 uv run pytest</code></pre>
       <p>First invocation downloads the embedding model (~120 MB) and the dataset Parquet, then runs the embedding pass (~2 min CPU, ~15 s GPU). Everything is cached on disk afterwards; subsequent runs start in &lt;1 second.</p>
 
-      <h3>B · Install &amp; run from PyPI</h3>
-      <p>Once published, any MCP client can launch the server through <code>uvx</code> with no manual install:</p>
-<pre><code>uvx mcp-customer-support-tickets</code></pre>
-      <p>This is the form used in the Claude Code / Codex / Claude Desktop config block from <a href="#s8">§8</a>.</p>
-
-      <h3>C · Wire it into Claude Code (one-shot CLI)</h3>
-      <p>The <code>claude</code> CLI registers MCP servers without editing any JSON. <code>--scope user</code> makes the server available across every project; drop it for cwd-only. Everything after <code>--</code> is the spawn command.</p>
-<pre><code># published form (after PyPI release)
-claude mcp add customer-support-tickets --scope user \
-  -- uvx mcp-customer-support-tickets
-
-# local-checkout form (pre-publish)
-claude mcp add customer-support-tickets --scope user \
-  -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
-
-# verify
-claude mcp list
-claude mcp get customer-support-tickets</code></pre>
-
-      <h3>D · Wire it into Codex CLI</h3>
-      <p>Codex reads <code>~/.codex/config.toml</code>. Add a stanza under <code>[mcp_servers.&lt;name&gt;]</code>:</p>
-<pre><code># published form
-[mcp_servers.customer-support-tickets]
-command = "uvx"
-args = ["mcp-customer-support-tickets"]
-
-# local-checkout form
-[mcp_servers.customer-support-tickets]
-command = "uv"
-args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]</code></pre>
-
-      <h3>E · Wire it into Claude Desktop</h3>
-      <p>Claude Desktop has no CLI — edit the config JSON directly:</p>
-      <ul>
-        <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
-        <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
-      </ul>
-      <p>Drop in the JSON block from <a href="#s8">§8</a> and restart the app. Once configured, the server's tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>), resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
+      <p class="footnote">All retrieval, grounding, and scaffold assembly is local — no API key required. The calling MCP client's own LLM produces the final reply text.</p>
 
       <h3>Environment variables</h3>
       <table>
         <tr><th style="width: 36%">Variable</th><th style="width: 14%">Required</th><th>Purpose</th></tr>
-        <tr><td><code>MCP_CST_DATASET_REVISION</code></td><td>No</td><td>HF dataset revision pin. Defaults to a known-good commit hash baked into the package.</td></tr>
+        <tr><td><code>MCP_CST_DATASET_REVISION</code></td><td>No</td><td>HF dataset revision pin. Defaults to <code>main</code>.</td></tr>
         <tr><td><code>MCP_CST_CACHE_DIR</code></td><td>No</td><td>Override the cache directory. Defaults to <code>platformdirs.user_cache_dir("mcp-customer-support-tickets")</code>.</td></tr>
-        <tr><td><code>RERANK</code></td><td>No</td><td>Set to <code>true</code> to enable cross-encoder reranking (downloads a ~270 MB model on first use). Default off.</td></tr>
       </table>
 
       <h3>Verifying it works</h3>
