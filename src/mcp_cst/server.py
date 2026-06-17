@@ -146,7 +146,7 @@ def search_tickets(
     q: Annotated[str, Field(description="Free-text query; matched against subject, body, and tags with hybrid BM25 + vector.")],
     queue: Annotated[str | None, Field(description="Restrict to one queue value. Use schema://tickets to see valid values.")] = None,
     priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Restrict to one priority.")] = None,
-    language: Annotated[Literal["en", "de"] | None, Field(description="Restrict to English or German tickets.")] = None,
+    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Restrict to English, German, or Hebrew tickets.")] = None,
     type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Restrict to one ticket type.")] = None,
     tags: Annotated[list[str] | None, Field(description="Filter to tickets whose normalized `tags` list contains these values. Combine with `tags_mode`.")] = None,
     tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = ticket must contain ALL listed tags; 'or' = ANY of them.")] = "and",
@@ -166,7 +166,7 @@ def aggregate_tickets(
     group_by: Annotated[Literal["queue", "priority", "language", "type", "tags"], Field(description="Field to group rows by.")],
     queue: Annotated[str | None, Field(description="Restrict to one queue value.")] = None,
     priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Restrict to one priority.")] = None,
-    language: Annotated[Literal["en", "de"] | None, Field(description="Restrict to English or German.")] = None,
+    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Restrict to English, German, or Hebrew.")] = None,
     type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Restrict to one ticket type.")] = None,
     tags: Annotated[list[str] | None, Field(description="Filter to tickets whose normalized `tags` list contains these values.")] = None,
     tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = all listed tags; 'or' = any.")] = "and",
@@ -188,7 +188,7 @@ def create_ticket(
     type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Optional ticket type.")] = None,
     queue: Annotated[str | None, Field(description="Optional queue. Any string — schema://tickets lists the 52 dataset values.")] = None,
     priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Optional priority.")] = None,
-    language: Annotated[Literal["en", "de"] | None, Field(description="Optional language tag.")] = None,
+    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Optional language tag.")] = None,
     version: Annotated[str, Field(description="Optional product/version label. Empty by default.")] = "",
     tags: Annotated[list[str] | None, Field(description="Optional list of tags (already normalized — non-empty strings only).")] = None,
 ) -> dict:
@@ -211,7 +211,7 @@ def update_ticket(
     type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="New ticket type. Omit to keep current.")] = None,
     queue: Annotated[str | None, Field(description="New queue. Omit to keep current.")] = None,
     priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="New priority. Omit to keep current.")] = None,
-    language: Annotated[Literal["en", "de"] | None, Field(description="New language. Omit to keep current.")] = None,
+    language: Annotated[Literal["en", "de", "he"] | None, Field(description="New language. Omit to keep current.")] = None,
     version: Annotated[str | None, Field(description="New version label. Omit to keep current.")] = None,
     tags: Annotated[list[str] | None, Field(description="New tag list (replaces all). Omit to keep current.")] = None,
 ) -> dict:
@@ -239,11 +239,13 @@ def delete_ticket(
 def draft_reply(
     ticket_id: Annotated[str, Field(description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft.")],
     target_language: Annotated[str | None, Field(description="Language to write the draft in. Defaults to the ticket's own language field.")] = None,
-) -> dict:
+) -> str:
+    # FastMCP's prompt protocol needs a string (or PromptMessage list); the impl
+    # returns a dict so unit tests can assert on metadata, so unwrap here.
     return draft_reply_module.draft_reply_impl(
         get_store(), get_query_embedder(),
         ticket_id=ticket_id, target_language=target_language,
-    )
+    )["prompt"]
 
 
 def main() -> None:

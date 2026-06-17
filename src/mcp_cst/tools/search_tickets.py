@@ -37,7 +37,7 @@ def search_tickets_impl(
     q: str,
     queue: str | None = None,
     priority: str | None = None,
-    language: Literal["en", "de"] | None = None,
+    language: Literal["en", "de", "he"] | None = None,
     type: str | None = None,
     tags: list[str] | None = None,
     tags_mode: Literal["and", "or"] = "and",

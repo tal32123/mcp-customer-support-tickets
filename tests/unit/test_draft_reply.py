@@ -157,6 +157,34 @@ def test_select_grounding_excludes_empty_answer(monkeypatch):
     assert ids == ["real"]
 
 
+def test_server_prompt_wrapper_returns_prompt_string(monkeypatch):
+    """Regression: FastMCP's prompt protocol can't convert a dict to a message.
+    The @mcp.prompt wrapper must return the prompt string itself, not the
+    impl's metadata-bearing dict.
+    """
+    import mcp_cst.server as server
+
+    monkeypatch.setattr(server, "get_store", lambda: object())
+    monkeypatch.setattr(server, "get_query_embedder", lambda: object())
+    monkeypatch.setattr(
+        server.draft_reply_module,
+        "draft_reply_impl",
+        lambda *a, **kw: {
+            "prompt": "ASSEMBLED PROMPT TEXT",
+            "target_id": "abcdef012345",
+            "target_language": "en",
+            "queue": "IT Support",
+            "type": "request",
+            "grounding_ids": ["aaaaaaaaaa11"],
+            "similarity_scores": [0.9],
+        },
+    )
+
+    out = server.draft_reply(ticket_id="abcdef012345")
+    assert isinstance(out, str)
+    assert out == "ASSEMBLED PROMPT TEXT"
+
+
 def test_select_grounding_returns_top_n_by_similarity(store, raw_ticket_rows):
     """H2: when the candidate set contains more than MAX_GROUNDING matches above
     threshold, the returned set must be the top-N by similarity descending —

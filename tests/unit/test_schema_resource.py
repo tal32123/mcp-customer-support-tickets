@@ -11,7 +11,7 @@ def test_schema_describes_columns():
 def test_schema_lists_filter_values():
     payload = schema_payload()
     assert "valid_filters" in payload
-    assert payload["valid_filters"]["language"] == ["en", "de"]
+    assert payload["valid_filters"]["language"] == ["en", "de", "he"]
     assert isinstance(payload["valid_filters"]["priority"], list)
     assert isinstance(payload["valid_filters"]["queue"], (list, str))
 
