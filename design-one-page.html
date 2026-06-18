@@ -175,7 +175,7 @@
     <img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running BM25 plus vector kNN fused by Reciprocal Rank Fusion, backed by LanceDB" />
   </div>
   <figcaption>
-    One Python process. BM25 and vector kNN run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns the top 10 with stable <code>ticket://{id}</code> citations. Rows, BM25 index, and 384-dim <code>e5-small</code> vectors live in one LanceDB table.
+    One Python process. BM25 and vector kNN run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations. Rows, BM25 index, and dense embeddings live in one LanceDB table.
   </figcaption>
 </figure>
 
@@ -183,7 +183,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">Design</span></div>
-    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> ids stable across machines, and embeds rows with <code>e5-small</code> (384-dim, multilingual, on-device). <strong>Store</strong> is a single LanceDB table holding rows, the BM25 index, and the vectors. <strong>Serve</strong> exposes six tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>create</code>/<code>update</code>/<code>delete_ticket</code>), two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>), and one prompt &mdash; <code>draft_reply</code> &mdash; which assembles the target ticket plus five grounding neighbours; the <em>client's</em> LLM writes the reply.</p>
+    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> ids stable across machines, and embeds rows with a small multilingual sentence-embedding model loaded on-device. <strong>Store</strong> is a single LanceDB table holding rows, the BM25 index, and the vectors. <strong>Serve</strong> exposes seven tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>, <code>create_ticket</code>, <code>update_ticket</code>, <code>delete_ticket</code>), two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>), and one prompt &mdash; <code>draft_reply</code> &mdash; which assembles the target ticket plus up to five grounding neighbours; the <em>client's</em> LLM writes the reply.</p>
   </section>
 
   <section>
@@ -193,7 +193,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">In production</span></div>
-    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. <code>bge-reranker-base</code> on by default once retrieval feeds real workflows; <code>bge-m3</code> embeddings on a small GPU for richer multilingual coverage (incl. Hebrew). PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts.</p>
+    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. A cross-encoder reranker on by default once retrieval feeds real workflows; a larger multilingual embedding model for richer coverage. PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts.</p>
   </section>
 
   <section>
