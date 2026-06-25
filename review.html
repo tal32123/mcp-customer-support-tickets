@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>MCP Customer Support Tickets — Review (iteration 3)</title>
+<title>MCP Customer Support Tickets — Review (iteration 4)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   :root {
@@ -347,8 +347,8 @@
 <body>
 
 <header class="top">
-  <h1>MCP Customer Support Tickets — Review · iteration 3</h1>
-  <div class="sub">71 items resolved across three iterations (47 architecture + 24 simplification, all verified with the unit-test suite). 8 Q&A answers below. Plus 36 guardrail proposals (LLM-safety / Ops / Data-quality) and 43 feature ideas (AI-Agent / Retrieval / Infra / Support workflow / Platform·DX). Filter by category & effort with the pills below.</div>
+  <h1>MCP Customer Support Tickets — Review · iteration 4</h1>
+  <div class="sub">119 items resolved across four iterations (47 arch + 24 simplification + 48 iter-4 bug-fix-and-feature sweep, all verified by the 167-test unit suite). Iteration 4 covers: data-layer FTS throttle / ANN index / write lock, retrieval tag predicate pushdown, safety/prompt hardening (multilingual injection, language-match grounding, body cap, markdown neutralization, prompt invariants), server error envelope + lazy embedder, CPU-default torch, Python 3.11 floor, and three new agent UX features (#200 cursor pagination, #201 batch get_tickets, #202 search_and_fetch). What remains: 3 reverted-tooling items + 26 guardrail proposals (rate limits, audit log, soft delete, taxonomy, drift detector, etc.) + 40 feature ideas. Filter by category & effort with the pills below.</div>
   <div class="controls">
     <input type="text" id="search" placeholder="Search title, location, problem, answer, or comment…" />
     <select id="bandFilter">
@@ -539,8 +539,8 @@
     if (resolved && !q && !band && !statusF) {
       html += `
         <div class="resolved-banner">
-          <h3>✓ ${resolved} items resolved this iteration</h3>
-          <p>Architecture spine, data internals, API polish, tests, and iteration-3 simplification sweep (4 dead modules deleted, ~321 LoC; plus dedupes across store/server/retrieval/prompts) have all landed — verified by the unit-test suite. The items below are the ones that still need your decision.</p>
+          <h3>✓ ${resolved} items resolved across four iterations</h3>
+          <p>Iteration 4 closed out every prior Q&amp;A finding (#1, #2, #4, #7, #12, #13, #19, #25), the iter-2/3 untouched backlog (#26, #38, #39, #40, #41, #42, #47, #50), the iter-4 review batch (#300–#314, #318–#321), ten LLM-safety/data-quality guardrails (#100, #103, #104, #109, #110, #111, #112, #113, #164, #170), and three agent UX features (#200 cursor pagination, #201 batch get_tickets, #202 search_and_fetch). All 167 unit tests pass deterministically. The items below are what's still open.</p>
         </div>
       `;
     }

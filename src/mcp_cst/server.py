@@ -1,19 +1,21 @@
 """FastMCP entry point. Wires up tools, resources, and prompts."""
 
 from __future__ import annotations
-import json
+import functools
 import logging
 import sys
-from typing import Callable, Literal
+import threading
+from typing import Callable, Literal, TypeVar
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
-from typing_extensions import Annotated
+from typing_extensions import Annotated, ParamSpec
 
 from .config import Config
 from .data.ingest import build_store_from_huggingface
 from .data.store import TicketStore
+from .errors import ErrorCode, McpCstError
 from .prompts import draft_reply as draft_reply_module
 from .resources import schema as schema_module
 from .resources import ticket as ticket_module
@@ -21,6 +23,8 @@ from .tools import aggregate_tickets as aggregate_tickets_module
 from .tools import create_ticket as create_ticket_module
 from .tools import delete_ticket as delete_ticket_module
 from .tools import get_ticket as get_ticket_module
+from .tools import get_tickets as get_tickets_module
+from .tools import search_and_fetch as search_and_fetch_module
 from .tools import search_tickets as search_tickets_module
 from .tools import server_info as server_info_module
 from .tools import update_ticket as update_ticket_module
@@ -43,6 +47,41 @@ _CFG: Config | None = None
 _STORE: TicketStore | None = None
 _EMBED_PASSAGES: EmbedFn | None = None
 _EMBED_QUERIES: EmbedFn | None = None
+# Background thread that warms the embedder so mcp.run() can start the
+# stdio handshake without blocking on torch + model download.
+_EMBED_THREAD: threading.Thread | None = None
+# Captured warm-up exception; surfaced from the embedder accessors so a
+# failed model load returns a structured error instead of None-deref.
+_EMBED_ERROR: BaseException | None = None
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _wrap(impl: Callable[_P, _R]) -> Callable[_P, _R | dict]:
+    """Catch structured + unexpected errors and convert to MCP error payloads.
+
+    McpCstError -> {"error": {"code": <code>, "message": <message>}}
+    Anything else -> log.exception(...) + {"error": {"code": "INTERNAL_ERROR", ...}}
+    """
+
+    @functools.wraps(impl)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R | dict:
+        try:
+            return impl(*args, **kwargs)
+        except McpCstError as e:
+            return {"error": {"code": e.code.value, "message": e.message}}
+        except Exception as e:
+            log.exception("unhandled error in %s", impl.__name__)
+            return {
+                "error": {
+                    "code": ErrorCode.INTERNAL_ERROR.value,
+                    "message": f"{type(e).__name__}: {e}",
+                }
+            }
+
+    return wrapper
 
 
 def _make_embedders(model_name: str) -> tuple[EmbedFn, EmbedFn]:
@@ -86,34 +125,93 @@ def get_store() -> TicketStore:
     return _STORE  # type: ignore[return-value]
 
 
+def _await_embedder() -> None:
+    """Block until the background warm-up thread finishes, if one is running."""
+    t = _EMBED_THREAD
+    if t is not None and t.is_alive():
+        t.join()
+
+
+def _check_embed_error() -> None:
+    """Raise a structured error if the background warm-up failed.
+
+    Without this the accessors return None and the next call to the embedder
+    blows up with an obscure AttributeError; worse, _init() spawns a fresh
+    thread on every retry, turning a single load failure into a thread storm.
+    """
+    if _EMBED_ERROR is not None:
+        raise McpCstError(
+            ErrorCode.DATASET_UNAVAILABLE,
+            f"embedder failed to load: {type(_EMBED_ERROR).__name__}: {_EMBED_ERROR}",
+        )
+
+
 def get_query_embedder() -> EmbedFn:
     if _EMBED_QUERIES is None:
+        _await_embedder()
+    _check_embed_error()
+    if _EMBED_QUERIES is None:
         _init()
+        _await_embedder()
+        _check_embed_error()
     return _EMBED_QUERIES  # type: ignore[return-value]
 
 
 def get_passage_embedder() -> EmbedFn:
     if _EMBED_PASSAGES is None:
+        _await_embedder()
+    _check_embed_error()
+    if _EMBED_PASSAGES is None:
         _init()
+        _await_embedder()
+        _check_embed_error()
     return _EMBED_PASSAGES  # type: ignore[return-value]
 
 
+def _warm_embedders(cfg: Config) -> None:
+    """Background warm-up: load the embedding model and publish the callables."""
+    global _EMBED_PASSAGES, _EMBED_QUERIES, _EMBED_ERROR
+    log.info("embedder warming up...")
+    try:
+        passages, queries = _make_embedders(cfg.embedding_model)
+    except BaseException as e:
+        _EMBED_ERROR = e
+        log.exception("embedder warm-up failed")
+        return
+    _EMBED_PASSAGES, _EMBED_QUERIES = passages, queries
+    log.info("embedder ready")
+
+
 def _init() -> None:
-    """Eagerly load the embedding model and open/build the store.
+    """Open/build the store eagerly and warm the embedder in the background.
 
     Called from main() before mcp.run(), and as a fallback from the
     accessors above so tests that import the module directly still work.
+    Store load is fast and the store needs the embedder only on first build
+    (cold cache) or insert; in that case we synchronously join the warm-up
+    thread before passing the embedder into build_store_from_huggingface.
     """
-    global _STORE, _EMBED_PASSAGES, _EMBED_QUERIES
+    global _STORE, _EMBED_PASSAGES, _EMBED_QUERIES, _EMBED_THREAD
     cfg = get_config()
+
     if _EMBED_PASSAGES is None or _EMBED_QUERIES is None:
-        _EMBED_PASSAGES, _EMBED_QUERIES = _make_embedders(cfg.embedding_model)
+        # Don't respawn after a captured failure — that turns one load error
+        # into a thread storm under retry.
+        if _EMBED_ERROR is None and (
+            _EMBED_THREAD is None or not _EMBED_THREAD.is_alive()
+        ):
+            t = threading.Thread(target=_warm_embedders, args=(cfg,), daemon=True)
+            _EMBED_THREAD = t
+            t.start()
+
     if _STORE is None:
         if TicketStore.is_valid(cfg.store_path, cfg.dataset_revision):
             _STORE = TicketStore.open(
                 path=cfg.store_path, revision=cfg.dataset_revision
             )
         else:
+            # Cold cache: we need the passage embedder to build the index.
+            _await_embedder()
             log.info(
                 "Building store at %s — first-run, this takes a few minutes.",
                 cfg.store_path,
@@ -130,6 +228,7 @@ def _init() -> None:
 
 
 @mcp.tool(description=server_info_module.DESCRIPTION)
+@_wrap
 def server_info() -> dict:
     return server_info_module.server_info_payload(cfg=get_config(), store=get_store())
 
@@ -139,13 +238,14 @@ def server_info() -> dict:
 
 @mcp.resource("schema://tickets", description=schema_module.DESCRIPTION)
 def schema_tickets() -> str:
-    return json.dumps(schema_module.schema_payload(), indent=2)
+    return schema_module.schema_resource_body()
 
 
 # --- get_ticket + ticket:// resource -------------------------------------
 
 
 @mcp.tool(description=get_ticket_module.DESCRIPTION)
+@_wrap
 def get_ticket(id: str) -> dict:
     return get_ticket_module.get_ticket_impl(get_store(), id)
 
@@ -159,11 +259,13 @@ def ticket(id: str) -> str:
 
 
 @mcp.tool(description=search_tickets_module.DESCRIPTION)
+@_wrap
 def search_tickets(
     q: Annotated[
         str,
         Field(
-            description="Free-text query; matched against subject, body, and tags with hybrid BM25 + vector."
+            description="Free-text query; matched against subject, body, and tags with hybrid BM25 + vector.",
+            max_length=1024,
         ),
     ],
     queue: Annotated[
@@ -187,7 +289,8 @@ def search_tickets(
     tags: Annotated[
         list[str] | None,
         Field(
-            description="Filter to tickets whose normalized `tags` list contains these values. Combine with `tags_mode`."
+            description="Filter to tickets whose normalized `tags` list contains these values. Combine with `tags_mode`.",
+            max_length=16,
         ),
     ] = None,
     tags_mode: Annotated[
@@ -197,9 +300,15 @@ def search_tickets(
         ),
     ] = "and",
     limit: Annotated[
-        int, Field(description="Max hits to return. Default 10, hard cap 50.")
+        int, Field(description="Max hits per page. Default 10, hard cap 50.")
     ] = 10,
-) -> list[dict]:
+    cursor: Annotated[
+        str | None,
+        Field(
+            description="Opaque cursor for the next page (returned in next_cursor); pass None for the first page."
+        ),
+    ] = None,
+) -> dict:
     return search_tickets_module.search_tickets_impl(
         get_store(),
         get_query_embedder(),
@@ -211,6 +320,7 @@ def search_tickets(
         tags=tags,
         tags_mode=tags_mode,
         limit=limit,
+        cursor=cursor,
     )
 
 
@@ -218,6 +328,7 @@ def search_tickets(
 
 
 @mcp.tool(description=aggregate_tickets_module.DESCRIPTION)
+@_wrap
 def aggregate_tickets(
     group_by: Annotated[
         Literal["queue", "priority", "language", "type", "tags"],
@@ -264,15 +375,27 @@ def aggregate_tickets(
 
 
 @mcp.tool(description=create_ticket_module.DESCRIPTION)
+@_wrap
 def create_ticket(
     subject: Annotated[
-        str, Field(description="Ticket subject line. Required, non-empty.")
+        str,
+        Field(
+            description="Ticket subject line. Required, non-empty.",
+            max_length=256,
+        ),
     ],
-    body: Annotated[str, Field(description="Ticket body text. Required, non-empty.")],
+    body: Annotated[
+        str,
+        Field(
+            description="Ticket body text. Required, non-empty.",
+            max_length=16384,
+        ),
+    ],
     answer: Annotated[
         str,
         Field(
-            description="Optional resolved answer if the ticket already has one. Empty by default."
+            description="Optional resolved answer if the ticket already has one. Empty by default.",
+            max_length=16384,
         ),
     ] = "",
     type: Annotated[
@@ -298,7 +421,8 @@ def create_ticket(
     tags: Annotated[
         list[str] | None,
         Field(
-            description="Optional list of tags (already normalized — non-empty strings only)."
+            description="Optional list of tags (already normalized — non-empty strings only).",
+            max_length=16,
         ),
     ] = None,
 ) -> dict:
@@ -321,16 +445,20 @@ def create_ticket(
 
 
 @mcp.tool(description=update_ticket_module.DESCRIPTION)
+@_wrap
 def update_ticket(
     ticket_id: Annotated[str, Field(description="12-char id of the ticket to update.")],
     subject: Annotated[
-        str | None, Field(description="New subject. Omit to keep current.")
+        str | None,
+        Field(description="New subject. Omit to keep current.", max_length=256),
     ] = None,
     body: Annotated[
-        str | None, Field(description="New body text. Omit to keep current.")
+        str | None,
+        Field(description="New body text. Omit to keep current.", max_length=16384),
     ] = None,
     answer: Annotated[
-        str | None, Field(description="New answer text. Omit to keep current.")
+        str | None,
+        Field(description="New answer text. Omit to keep current.", max_length=16384),
     ] = None,
     type: Annotated[
         _TypeLit | None,
@@ -352,7 +480,10 @@ def update_ticket(
     ] = None,
     tags: Annotated[
         list[str] | None,
-        Field(description="New tag list (replaces all). Omit to keep current."),
+        Field(
+            description="New tag list (replaces all). Omit to keep current.",
+            max_length=16,
+        ),
     ] = None,
 ) -> dict:
     return update_ticket_module.update_ticket_impl(
@@ -375,6 +506,7 @@ def update_ticket(
 
 
 @mcp.tool(description=delete_ticket_module.DESCRIPTION)
+@_wrap
 def delete_ticket(
     ticket_id: Annotated[
         str,
@@ -412,6 +544,92 @@ def draft_reply(
         ticket_id=ticket_id,
         target_language=target_language,
     )["prompt"]
+
+
+# --- get_tickets (batch) --------------------------------------------------
+
+
+@mcp.tool(description=get_tickets_module.DESCRIPTION)
+@_wrap
+def get_tickets(
+    ids: Annotated[
+        list[str],
+        Field(
+            description=(
+                "List of ticket ids to fetch in one round-trip. Order preserved; "
+                "unknown ids become null. Hard cap 50."
+            ),
+            max_length=50,
+        ),
+    ],
+) -> list[dict | None]:
+    return get_tickets_module.get_tickets_impl(get_store(), ids)
+
+
+# --- search_and_fetch -----------------------------------------------------
+
+
+@mcp.tool(description=search_and_fetch_module.DESCRIPTION)
+@_wrap
+def search_and_fetch(
+    q: Annotated[
+        str,
+        Field(
+            description="Free-text query; hybrid BM25 + vector retrieval.",
+            max_length=1024,
+        ),
+    ],
+    queue: Annotated[
+        str | None,
+        Field(description="Restrict to one queue value."),
+    ] = None,
+    priority: Annotated[
+        _PriorityLit | None,
+        Field(description="Restrict to one priority."),
+    ] = None,
+    language: Annotated[
+        _LanguageLit | None,
+        Field(description="Restrict to English, German, or Hebrew."),
+    ] = None,
+    type: Annotated[
+        _TypeLit | None,
+        Field(description="Restrict to one ticket type."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="Filter to tickets whose normalized `tags` list contains these values.",
+            max_length=16,
+        ),
+    ] = None,
+    tags_mode: Annotated[
+        Literal["and", "or"],
+        Field(description="'and' = ALL listed tags; 'or' = ANY."),
+    ] = "and",
+    k: Annotated[
+        int,
+        Field(description="Max full rows to return. Default 10, hard cap 50."),
+    ] = 10,
+    include: Annotated[
+        Literal["body", "answer", "all"],
+        Field(
+            description="'body' drops answer; 'answer' drops body; 'all' returns both."
+        ),
+    ] = "all",
+) -> list[dict]:
+    return search_and_fetch_module.search_and_fetch_impl(
+        get_store(),
+        get_query_embedder(),
+        q=q,
+        queue=queue,
+        priority=priority,
+        language=language,
+        type=type,
+        tags=tags,
+        tags_mode=tags_mode,
+        k=k,
+        include=include,
+    )
 
 
 def main() -> None:

@@ -516,15 +516,17 @@ flowchart LR
           <th style="width: 16%">Kind</th>
           <th>What it does</th>
         </tr>
-        <tr><td><code>search_tickets</code></td><td>Tool · read</td><td>Hybrid BM25 + vector search. Filters: <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, <code>tags</code> + <code>tags_mode</code> (<code>"and"</code>/<code>"or"</code>). <code>limit</code> defaults to 10, hard cap 50. Each hit is a preview (id + subject + 240-char snippet).</td></tr>
+        <tr><td><code>search_tickets</code></td><td>Tool · read</td><td>Hybrid BM25 + vector search with cursor pagination. Filters: <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, <code>tags</code> + <code>tags_mode</code> (<code>"and"</code>/<code>"or"</code>). <code>limit</code> defaults to 10, hard cap 50. Returns <code>{hits, next_cursor, search_id, total_estimate}</code> — pass <code>cursor</code> to walk past the first page without re-fusing. Each hit is a preview (id + subject + 240-char snippet, both XML-escaped and screened for injection).</td></tr>
         <tr><td><code>get_ticket(id)</code></td><td>Tool · read</td><td>Fetches one ticket, verbatim, every column, plus a pre-wrapped <code>&lt;ticket&gt;…&lt;/ticket&gt;</code> XML string in a <code>wrapped</code> field for direct quoting.</td></tr>
-        <tr><td><code>aggregate_tickets</code></td><td>Tool · read</td><td>Counts grouped by <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, or <code>tags</code>. Same filter set as <code>search_tickets</code>.</td></tr>
+        <tr><td><code>get_tickets(ids[])</code></td><td>Tool · read</td><td>Batch read of up to 50 ids. Preserves input order; unknown ids surface as <code>null</code> so partial-success batches aren't poisoned by one bad id. Collapses the common search-then-fetch-top-k loop into one tool turn.</td></tr>
+        <tr><td><code>search_and_fetch</code></td><td>Tool · read</td><td>Composite: hybrid search → fetch full rows in one call. <code>include='body'</code>/<code>'answer'</code>/<code>'all'</code> trims unused fields. Skips the cursor cache — single-shot research path.</td></tr>
+        <tr><td><code>aggregate_tickets</code></td><td>Tool · read</td><td>Counts grouped by <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, or <code>tags</code>. Same filter set as <code>search_tickets</code>. Result cached by write-sequence; any mutation busts the cache automatically.</td></tr>
         <tr><td><code>server_info</code></td><td>Tool · read</td><td>Returns <code>dataset_id</code>, <code>dataset_revision</code>, <code>embedding_model</code>, <code>row_count</code>, <code>license</code>, <code>package_version</code>. Read-only metadata.</td></tr>
         <tr><td><code>create_ticket</code></td><td>Tool · write</td><td>Inserts a caller-supplied subject + body (plus optional metadata) into the running store, embeds it, and returns the new 12-char id. Refuses injection-shaped subject/body via <code>INJECTION_DETECTED</code>. The server never generates ticket content.</td></tr>
         <tr><td><code>update_ticket</code></td><td>Tool · write</td><td>Patches a single ticket by id. Any field may be omitted to keep its current value. Re-embeds when subject or body changes.</td></tr>
         <tr><td><code>delete_ticket</code></td><td>Tool · write · destructive</td><td>Removes a ticket by id from the running store. Tool description tells the model to confirm with the user first; deletion is irreversible.</td></tr>
         <tr><td><code>ticket://{id}</code></td><td>Resource</td><td>Citation handle. Lets Claude attach a specific ticket to the chat.</td></tr>
-        <tr><td><code>schema://tickets</code></td><td>Resource</td><td>The list of columns and valid values (52 queues, 5 priorities including <code>info</code>, 2 languages, the four ticket types) plus a <code>writes</code> section documenting the three mutating tools.</td></tr>
+        <tr><td><code>schema://tickets</code></td><td>Resource</td><td>The list of columns and valid values (52 queues, 5 priorities including <code>info</code>, 3 languages, the four ticket types). The <code>writes</code> section was split into a separate helper to keep the publicly-readable resource from doubling as a recipe card for destructive operations.</td></tr>
         <tr><td><code>draft_reply</code></td><td>Prompt</td><td>User-invoked. Takes a ticket id and an optional <code>target_language</code> (defaults to the ticket's own language). Assembles the target ticket + up to 5 grounding prior tickets that clear cosine ≥ 0.70 with a non-empty answer, plus a type-aware scaffold for the calling client's LLM. Refuses with <code>NO_GROUNDING_AVAILABLE</code> if nothing clears the threshold, and with <code>INJECTION_DETECTED</code> if the target ticket carries injection-shaped text.</td></tr>
       </table>
 
@@ -831,7 +833,7 @@ flowchart TB
 
       <h3>Prerequisites</h3>
       <ul>
-        <li><strong>Python 3.13</strong></li>
+        <li><strong>Python ≥ 3.11</strong> (developed on 3.13).</li>
         <li><strong><code>uv</code></strong> (<a href="https://docs.astral.sh/uv/">install</a>) — env management, dependency resolution, and the <code>uv run</code> launcher MCP clients invoke.</li>
         <li>A working internet connection on first run (one-time downloads of the dataset Parquet and the embedding model).</li>
       </ul>
@@ -867,7 +869,7 @@ args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-cust
     }
   }
 }</code></pre>
-      <p>Restart the app. The server's seven tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>, <code>create_ticket</code>, <code>update_ticket</code>, <code>delete_ticket</code>), the two resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
+      <p>Restart the app. The server's nine tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>get_tickets</code>, <code>search_and_fetch</code>, <code>aggregate_tickets</code>, <code>server_info</code>, <code>create_ticket</code>, <code>update_ticket</code>, <code>delete_ticket</code>), the two resources (<code>ticket://</code>, <code>schema://</code>), and the <code>draft_reply</code> prompt all become available to chat.</p>
 
       <h3>D · Local development</h3>
       <p>Clone the repo and let <code>uv</code> handle the rest:</p>

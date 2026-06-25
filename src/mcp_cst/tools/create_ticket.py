@@ -1,6 +1,7 @@
 """create_ticket tool — insert a new ticket into the running store."""
 
 from __future__ import annotations
+import re
 from typing import Callable
 
 import numpy as np
@@ -9,6 +10,29 @@ from ..data.store import TicketStore
 from ..docs import make_description
 from ..errors import ErrorCode, McpCstError
 from ..safety import looks_like_injection
+
+
+_ALLOWED_TYPES = {"question", "incident", "request", "problem"}
+_ALLOWED_PRIORITIES = {"low", "medium", "high", "critical", "info"}
+_VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$|^$")
+
+
+def _validate_enums(*, type: str, priority: str, version: str) -> None:
+    if type and type not in _ALLOWED_TYPES:
+        raise McpCstError(
+            ErrorCode.INVALID_INPUT,
+            f"type must be one of {sorted(_ALLOWED_TYPES)} or empty, got {type!r}",
+        )
+    if priority and priority not in _ALLOWED_PRIORITIES:
+        raise McpCstError(
+            ErrorCode.INVALID_INPUT,
+            f"priority must be one of {sorted(_ALLOWED_PRIORITIES)} or empty, got {priority!r}",
+        )
+    if not _VERSION_RE.match(version):
+        raise McpCstError(
+            ErrorCode.INVALID_INPUT,
+            f"version must match N.N or N.N.N, got {version!r}",
+        )
 
 
 DESCRIPTION = make_description(
@@ -44,11 +68,16 @@ def create_ticket_impl(
 ) -> dict:
     if not subject.strip() or not body.strip():
         raise McpCstError(ErrorCode.INVALID_INPUT, "subject and body are required")
-    if looks_like_injection(subject) or looks_like_injection(body):
+    if (
+        looks_like_injection(subject)
+        or looks_like_injection(body)
+        or looks_like_injection(answer)
+    ):
         raise McpCstError(
             ErrorCode.INJECTION_DETECTED,
             "input contains injection-shaped patterns; refusing",
         )
+    _validate_enums(type=type, priority=priority, version=version)
     new_id = store.add_ticket(
         subject=subject,
         body=body,

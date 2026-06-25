@@ -1,6 +1,7 @@
 """schema://tickets resource — describes the dataset shape."""
 
 from __future__ import annotations
+import json
 
 from ..docs import make_description
 
@@ -9,7 +10,7 @@ DESCRIPTION = make_description(
     summary="Schema for the ticket corpus: columns, valid filter values, and notes on what is NOT available.",
     use_for="Use this for: discovering valid filter values before calling search_tickets or aggregate_tickets, understanding the data shape.",
     not_for="Do NOT use this for: fetching ticket content (use get_ticket or ticket:// resource).",
-    output="Output: JSON with `columns`, `valid_filters`, `not_available`, and `writes` sections.",
+    output="Output: JSON with `columns`, `valid_filters`, and `not_available` sections.",
     include_g4=False,
 )
 
@@ -64,6 +65,15 @@ def schema_payload() -> dict:
             "No customer fields (name, email, id) — cannot filter by customer.",
             "No ticket-id column from source — server fabricates stable ids.",
         ],
+    }
+
+
+def schema_writes_payload() -> dict:
+    """Write-tool documentation kept separate so the public schema resource
+    doesn't openly enumerate destructive operations to ticket-borne attackers
+    (#109). Each write tool already documents itself via its own description.
+    """
+    return {
         "writes": [
             "create_ticket: append one ticket (subject + body required; answer, type, queue, priority, language, version, tags optional). Returns {id}. The id is derived from the next available row_index using the same scheme as ingest. New tickets live in the per-revision cache and survive restarts.",
             "update_ticket: patch one ticket by id; unspecified fields are left alone; `tags` replaces the full list. Re-embeds and re-indexes. Returns {id, updated}. TICKET_NOT_FOUND if id is unknown.",
@@ -71,3 +81,7 @@ def schema_payload() -> dict:
         ],
     }
 
+
+def schema_resource_body() -> str:
+    """Serialized form of `schema_payload()` for the schema:// resource."""
+    return json.dumps(schema_payload(), indent=2)

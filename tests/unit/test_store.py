@@ -198,3 +198,35 @@ def test_ingest_coerces_null_fields(tmp_path):
     assert rec.answer == ""
     assert rec.type == ""
     assert rec.version == ""
+
+
+def test_null_subject_body_not_poisoning_bm25(tmp_path):
+    """Regression #300: a None subject/body must not write the literal
+    string 'None' into the BM25 text — the persisted text_search column
+    must contain no spurious 'None' tokens."""
+    rows = [
+        {
+            "subject": None,
+            "body": None,
+            "answer": "real answer",
+            "type": "",
+            "queue": "",
+            "priority": "",
+            "language": "",
+            "version": "",
+            "tag_1": "",
+            "tag_2": "",
+            "tag_3": "",
+            "tag_4": "",
+            "tag_5": "",
+            "tag_6": "",
+        },
+    ]
+    s = TicketStore.create(
+        path=tmp_path / "none-bm25",
+        revision="r",
+        rows=rows,
+        embedder=fake_embed,
+    )
+    text = s.table.to_arrow().column("text_search").to_pylist()[0]
+    assert "None" not in text

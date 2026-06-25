@@ -3,7 +3,7 @@ name = "mcp-customer-support-tickets"
 version = "0.1.0"
 description = "Read-only MCP server for the Tobi-Bueck customer-support-tickets dataset."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Tal" }]
 dependencies = [
@@ -18,6 +18,10 @@ dependencies = [
     "numpy>=1.26",
     "torch>=2.5",
 ]
+
+# Opt-in CUDA wheel: `uv sync --extra cuda` (default install uses CPU torch).
+[project.optional-dependencies]
+cuda = ["torch>=2.5"]
 
 [project.scripts]
 mcp-customer-support-tickets = "mcp_cst.server:main"
@@ -37,14 +41,7 @@ packages = ["src/mcp_cst"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cu124", marker = "platform_system != 'Darwin'" },
+addopts = "-q --strict-markers --ignore=tests/integration"
+markers = [
+    "integration: tests that download model weights / hit network",
 ]

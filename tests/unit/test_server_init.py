@@ -17,17 +17,25 @@ def reset_globals():
         server._STORE,
         server._EMBED_PASSAGES,
         server._EMBED_QUERIES,
+        server._EMBED_THREAD,
     )
     server._CFG = None
     server._STORE = None
     server._EMBED_PASSAGES = None
     server._EMBED_QUERIES = None
+    server._EMBED_THREAD = None
     yield
+    # Make sure any background warm-up has finished before the next test
+    # touches module globals.
+    t = server._EMBED_THREAD
+    if t is not None and t.is_alive():
+        t.join(timeout=10)
     (
         server._CFG,
         server._STORE,
         server._EMBED_PASSAGES,
         server._EMBED_QUERIES,
+        server._EMBED_THREAD,
     ) = saved
 
 

@@ -6,6 +6,7 @@ from typing import Literal
 from ..data.aggregates import group_count
 from ..data.store import TicketStore
 from ..docs import make_description
+from ..retrieval.hybrid import build_filters
 
 
 DESCRIPTION = make_description(
@@ -34,15 +35,12 @@ def aggregate_tickets_impl(
     tags: list[str] | None = None,
     tags_mode: Literal["and", "or"] = "and",
 ) -> list[dict]:
-    filters: dict = {"tags_mode": tags_mode}
-    if queue is not None:
-        filters["queue"] = queue
-    if priority is not None:
-        filters["priority"] = priority
-    if language is not None:
-        filters["language"] = language
-    if type is not None:
-        filters["type"] = type
-    if tags:
-        filters["tags"] = tags
+    filters = build_filters(
+        queue=queue,
+        priority=priority,
+        language=language,
+        type=type,
+        tags=tags,
+        tags_mode=tags_mode,
+    )
     return group_count(store, group_by=group_by, filters=filters)

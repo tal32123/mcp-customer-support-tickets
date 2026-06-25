@@ -9,6 +9,7 @@ from ..data.store import TicketStore
 from ..docs import make_description
 from ..errors import ErrorCode, McpCstError
 from ..safety import looks_like_injection
+from .create_ticket import _validate_enums
 
 
 DESCRIPTION = make_description(
@@ -44,12 +45,17 @@ def update_ticket_impl(
     for name, value in (("subject", subject), ("body", body)):
         if value is not None and not value.strip():
             raise McpCstError(ErrorCode.INVALID_INPUT, f"{name} cannot be blanked")
-    for value in (subject, body):
+    for value in (subject, body, answer):
         if value is not None and looks_like_injection(value):
             raise McpCstError(
                 ErrorCode.INJECTION_DETECTED,
                 "input contains injection-shaped patterns; refusing",
             )
+    _validate_enums(
+        type=type or "",
+        priority=priority or "",
+        version=version if version is not None else "",
+    )
     ok = store.update_ticket(
         ticket_id=ticket_id,
         embedder=embedder,

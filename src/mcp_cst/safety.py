@@ -1,9 +1,14 @@
 """Helpers for treating ticket text as untrusted data."""
 
 from __future__ import annotations
+import logging
 import re
 import unicodedata
 from xml.sax.saxutils import escape, quoteattr
+
+
+log = logging.getLogger(__name__)
+_warned_once = False
 
 
 # The dotall flag lets `.` match newlines so multi-line variants like
@@ -20,6 +25,26 @@ _INJECTION_PATTERNS = [
     re.compile(r"system\s+prompt\s*[:=]", re.IGNORECASE),
     re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
     re.compile(r"\bnew\s+instructions?\s*[:=]", re.IGNORECASE),
+    # English social-engineering phrasings (#303).
+    re.compile(r"\bforget\s+what\s+I\s+said\b", re.IGNORECASE),
+    re.compile(r"\boverride\s+your\b", re.IGNORECASE),
+    re.compile(r"\byou\s+must\s+now\b", re.IGNORECASE),
+    re.compile(r"\bact\s+as\b", re.IGNORECASE),
+    re.compile(r"\bfrom\s+now\s+on\s+you\s+(are|act|will)\b", re.IGNORECASE),
+    # German (#104).
+    re.compile(
+        r"ignoriere\s+alle\s+(vorherigen|bisherigen|obigen)\s+(Anweisungen|Anleitungen)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"vergesse\s+alle\s+(vorherigen|bisherigen|obigen)\s+(Anweisungen|Anleitungen)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(r"Systemprompt\s*[:=]", re.IGNORECASE),
+    # Hebrew (#104). No IGNORECASE needed — Hebrew has no case.
+    re.compile(r"התעלם"),
+    re.compile(r"אל\s+תשים\s+לב"),
+    re.compile(r"הוראות\s+חדשות\s*[:=]"),
 ]
 
 
@@ -37,7 +62,29 @@ def escape_text(text: str | None) -> str:
     built before the ingest fix can contain null cells, and the prompt
     paths must not crash on them.
     """
-    return escape(text or "", _EXTRA_ENTITIES)
+    if text is None:
+        global _warned_once
+        if not _warned_once:
+            log.warning("escape_text received None — upstream nullable field leaked")
+            _warned_once = True
+        return ""
+    return escape(text, _EXTRA_ENTITIES)
+
+
+def neutralize_markdown(text: str) -> str:
+    """De-fang markdown so prior-ticket bodies can't render as live formatting.
+
+    Run AFTER `escape_text` (XML-escape first, markdown-neutralize second).
+    Lazy version: break ``` fences with a literal apostrophe-triple, and
+    prefix `[` with a zero-width space so `[link](url)` won't render.
+    """
+    # ponytail: smallest neutralization that defangs the common payloads
+    # (code fences + link syntax). Real renderers will still see the text
+    # but won't parse it as markdown. Upgrade to a full markdown-stripper
+    # if richer payloads (HTML, images, footnotes) start landing.
+    text = text.replace("```", "''' ")
+    text = text.replace("[", "​[")
+    return text
 
 
 def _normalize(text: str) -> str:
@@ -55,8 +102,8 @@ def looks_like_injection(text: str) -> bool:
     """True if `text` contains language commonly used in prompt-injection
     attacks.
 
-    HEURISTIC, NOT A SECURITY GUARANTEE. The patterns are English-only and
-    even with NFKC + format-stripping a determined attacker can paraphrase
+    HEURISTIC, NOT A SECURITY GUARANTEE. Patterns cover EN/DE/HE and even
+    with NFKC + format-stripping a determined attacker can paraphrase
     around them. Use this as one signal alongside the `<ticket>`-tag
     convention and the LLM-side reminder; do not rely on it as a sole
     defense against malicious ticket content.

@@ -21,6 +21,7 @@ def build_store_from_rows(
     revision: str,
     embedder: Callable[[list[str]], np.ndarray],
     on_progress: ProgressFn | None = None,
+    batch_size: int = _BATCH_SIZE,
 ) -> TicketStore:
     """Build a fresh store from a list of dict rows.
 
@@ -31,8 +32,8 @@ def build_store_from_rows(
 
     def batched(texts: list[str]) -> np.ndarray:
         chunks: list[np.ndarray] = []
-        for i in range(0, len(texts), _BATCH_SIZE):
-            chunk = embedder(texts[i : i + _BATCH_SIZE])
+        for i in range(0, len(texts), batch_size):
+            chunk = embedder(texts[i : i + batch_size])
             chunks.append(chunk)
             done[0] += chunk.shape[0]
             if on_progress is not None:
@@ -54,6 +55,7 @@ def build_store_from_huggingface(
     revision: str,
     embedder: Callable[[list[str]], np.ndarray],
     on_progress: ProgressFn | None = None,
+    batch_size: int = _BATCH_SIZE,
 ) -> TicketStore:
     """Download the HF dataset at `revision` and build the store.
 
@@ -70,4 +72,5 @@ def build_store_from_huggingface(
         revision=revision,
         embedder=embedder,
         on_progress=on_progress,
+        batch_size=batch_size,
     )

@@ -175,7 +175,7 @@
     <img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running BM25 plus vector kNN fused by Reciprocal Rank Fusion, backed by LanceDB" />
   </div>
   <figcaption>
-    One Python process. BM25 and vector kNN run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations. Rows, BM25 index, and dense embeddings live in one LanceDB table.
+    One Python process. BM25 and vector kNN (IVF_HNSW_SQ on cosine) run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations and an opaque cursor for resumable sweeps. Rows, BM25 index, ANN graph, and dense embeddings live in one LanceDB table.
   </figcaption>
 </figure>
 
@@ -183,7 +183,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">Design</span></div>
-    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> ids stable across machines, and embeds rows with a small multilingual sentence-embedding model loaded on-device. <strong>Store</strong> is a single LanceDB table holding rows, the BM25 index, and the vectors. <strong>Serve</strong> exposes seven tools (<code>search_tickets</code>, <code>get_ticket</code>, <code>aggregate_tickets</code>, <code>server_info</code>, <code>create_ticket</code>, <code>update_ticket</code>, <code>delete_ticket</code>), two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>), and one prompt &mdash; <code>draft_reply</code> &mdash; which assembles the target ticket plus up to five grounding neighbours; the <em>client's</em> LLM writes the reply.</p>
+    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> ids stable across machines, and embeds rows with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single LanceDB table holding rows, BM25, ANN, and vectors, guarded by a write lock and a debounced FTS rebuild. <strong>Serve</strong> exposes nine tools (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>, <code>create_ticket</code>, <code>update_ticket</code>, <code>delete_ticket</code>), two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>), and one prompt &mdash; <code>draft_reply</code> &mdash; which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants); the <em>client's</em> LLM writes the reply.</p>
   </section>
 
   <section>
@@ -198,7 +198,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">04</span><span class="sec-title">Risks</span></div>
-    <p><strong>Hallucinated tickets.</strong> Read endpoints return dataset bytes verbatim; the server never calls an LLM. <strong>Prompt injection via ticket bodies.</strong> Content wrapped in <code>&lt;ticket&gt;</code> tags; every tool description ends with a reminder that text inside those tags is data, not instructions. <strong>Dataset drift.</strong> HF revision pinned into every <code>ticket://</code> URI and the embedding cache key; re-index triggers on revision change. <strong>Confident answers from weak matches.</strong> <code>search_tickets</code> returns body snippets so the LLM judges from the text, not the rank; <code>draft_reply</code> refuses to scaffold unless a prior ticket clears cosine &ge; 0.70 with a non-empty answer; unsupported filters fail loud (no timestamp column).</p>
+    <p><strong>Hallucinated tickets.</strong> Read endpoints return dataset bytes verbatim; the server never calls an LLM. <strong>Prompt injection via ticket bodies.</strong> Content wrapped in <code>&lt;ticket&gt;</code> tags, a trust-boundary notice precedes every prompt, a multilingual heuristic screens both target and grounding before drafting, markdown is defanged to break clickable-link tricks, and an INTERNAL_ERROR envelope keeps raw tracebacks off the wire. <strong>Dataset drift.</strong> HF revision pinned into every <code>ticket://</code> URI and the embedding cache key; <code>is_valid</code> samples vectors for NaN/Inf before serving; re-index triggers on revision change. <strong>Confident answers from weak matches.</strong> <code>search_tickets</code> returns body snippets so the LLM judges from the text, not the rank; <code>draft_reply</code> refuses to scaffold unless a prior ticket clears cosine &ge; 0.70 with a non-empty answer; unsupported filters fail loud (no timestamp column).</p>
   </section>
 
   <section class="span-2">

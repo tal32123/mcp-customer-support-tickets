@@ -6,6 +6,7 @@ import polars as pl
 
 from .store import TicketStore
 from ..errors import ErrorCode, McpCstError
+from ..retrieval.hybrid import TicketFilters
 
 
 GROUP_BY_FIELDS = {"queue", "priority", "language", "type", "tags"}
@@ -17,7 +18,7 @@ FILTER_SCALAR_FIELDS = {"queue", "priority", "language", "type"}
 _AGG_COLUMNS = ["id", "queue", "priority", "language", "type", "tags"]
 
 
-def _apply_filters(df: pl.DataFrame, filters: dict) -> pl.DataFrame:
+def _apply_filters(df: pl.DataFrame, filters: TicketFilters) -> pl.DataFrame:
     tags = filters.get("tags")
     tags_mode = filters.get("tags_mode", "and")
 
@@ -47,7 +48,29 @@ def _apply_filters(df: pl.DataFrame, filters: dict) -> pl.DataFrame:
     return df
 
 
-def group_count(store: TicketStore, *, group_by: str, filters: dict) -> list[dict]:
+# `(id(table), write_seq)` → Polars DF. write_seq increments on every
+# mutation, so update_ticket (delete+insert, row_count unchanged) still
+# busts the cache. row_count alone would miss that case.
+_MATERIALIZE_CACHE: dict[tuple[int, int], pl.DataFrame] = {}
+_MATERIALIZE_CACHE_MAX = 32
+
+
+def _materialize(store: TicketStore) -> pl.DataFrame:
+    key = (id(store.table), store.write_seq)
+    cached = _MATERIALIZE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    arr = store.table.search().select(_AGG_COLUMNS).to_arrow()
+    df = pl.from_arrow(arr)
+    if len(_MATERIALIZE_CACHE) >= _MATERIALIZE_CACHE_MAX:
+        _MATERIALIZE_CACHE.pop(next(iter(_MATERIALIZE_CACHE)))
+    _MATERIALIZE_CACHE[key] = df
+    return df
+
+
+def group_count(
+    store: TicketStore, *, group_by: str, filters: TicketFilters
+) -> list[dict]:
     if group_by not in GROUP_BY_FIELDS:
         raise McpCstError(
             ErrorCode.UNSUPPORTED_GROUP_BY,
@@ -56,8 +79,7 @@ def group_count(store: TicketStore, *, group_by: str, filters: dict) -> list[dic
 
     # `search().select(cols).to_arrow()` is LanceDB's column-projection
     # path -- skips reading the 384-dim `vector` column from disk.
-    arr = store.table.search().select(_AGG_COLUMNS).to_arrow()
-    df = pl.from_arrow(arr)
+    df = _materialize(store)
     df = _apply_filters(df, filters)
 
     if group_by == "tags":
