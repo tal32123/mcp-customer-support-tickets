@@ -25,7 +25,5 @@ def make_description(
     output: str,
     include_g4: bool,
 ) -> str:
-    parts = [summary, "", use_for, "", not_for, "", output]
-    if include_g4:
-        parts += ["", G4_REMINDER]
-    return "\n".join(parts)
+    body = "\n\n".join([summary, use_for, not_for, output])
+    return f"{body}\n\n{G4_REMINDER}" if include_g4 else body

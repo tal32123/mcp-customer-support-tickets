@@ -1,6 +1,7 @@
 """FastMCP entry point. Wires up tools, resources, and prompts."""
 
 from __future__ import annotations
+import json
 import logging
 import sys
 from typing import Callable, Literal
@@ -31,6 +32,10 @@ mcp = FastMCP("customer-support-tickets")
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
+_PriorityLit = Literal["low", "medium", "high", "critical", "info"]
+_LanguageLit = Literal["en", "de", "he"]
+_TypeLit = Literal["question", "incident", "request", "problem"]
+
 
 # Module-level singletons. Populated by _init() at startup so concurrent
 # tool dispatch never races on first-call initialization.
@@ -49,11 +54,14 @@ def _make_embedders(model_name: str) -> tuple[EmbedFn, EmbedFn]:
     retrieval quality, so we expose them separately.
     """
     from sentence_transformers import SentenceTransformer
+
     model = SentenceTransformer(model_name)
 
     def _encode(prefixed: list[str]) -> np.ndarray:
         return model.encode(
-            prefixed, convert_to_numpy=True, normalize_embeddings=True,
+            prefixed,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
         ).astype(np.float32)
 
     def embed_passages(texts: list[str]) -> np.ndarray:
@@ -102,9 +110,14 @@ def _init() -> None:
         _EMBED_PASSAGES, _EMBED_QUERIES = _make_embedders(cfg.embedding_model)
     if _STORE is None:
         if TicketStore.is_valid(cfg.store_path, cfg.dataset_revision):
-            _STORE = TicketStore.open(path=cfg.store_path, revision=cfg.dataset_revision)
+            _STORE = TicketStore.open(
+                path=cfg.store_path, revision=cfg.dataset_revision
+            )
         else:
-            log.info("Building store at %s — first-run, this takes a few minutes.", cfg.store_path)
+            log.info(
+                "Building store at %s — first-run, this takes a few minutes.",
+                cfg.store_path,
+            )
             _STORE = build_store_from_huggingface(
                 path=cfg.store_path,
                 dataset_id=cfg.dataset_id,
@@ -115,6 +128,7 @@ def _init() -> None:
 
 # --- server_info ---------------------------------------------------------
 
+
 @mcp.tool(description=server_info_module.DESCRIPTION)
 def server_info() -> dict:
     return server_info_module.server_info_payload(cfg=get_config(), store=get_store())
@@ -122,12 +136,14 @@ def server_info() -> dict:
 
 # --- schema:// resource --------------------------------------------------
 
+
 @mcp.resource("schema://tickets", description=schema_module.DESCRIPTION)
 def schema_tickets() -> str:
-    return schema_module.schema_resource_body()
+    return json.dumps(schema_module.schema_payload(), indent=2)
 
 
 # --- get_ticket + ticket:// resource -------------------------------------
+
 
 @mcp.tool(description=get_ticket_module.DESCRIPTION)
 def get_ticket(id: str) -> dict:
@@ -141,110 +157,260 @@ def ticket(id: str) -> str:
 
 # --- search_tickets ------------------------------------------------------
 
+
 @mcp.tool(description=search_tickets_module.DESCRIPTION)
 def search_tickets(
-    q: Annotated[str, Field(description="Free-text query; matched against subject, body, and tags with hybrid BM25 + vector.")],
-    queue: Annotated[str | None, Field(description="Restrict to one queue value. Use schema://tickets to see valid values.")] = None,
-    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Restrict to one priority.")] = None,
-    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Restrict to English, German, or Hebrew tickets.")] = None,
-    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Restrict to one ticket type.")] = None,
-    tags: Annotated[list[str] | None, Field(description="Filter to tickets whose normalized `tags` list contains these values. Combine with `tags_mode`.")] = None,
-    tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = ticket must contain ALL listed tags; 'or' = ANY of them.")] = "and",
-    limit: Annotated[int, Field(description="Max hits to return. Default 10, hard cap 50.")] = 10,
+    q: Annotated[
+        str,
+        Field(
+            description="Free-text query; matched against subject, body, and tags with hybrid BM25 + vector."
+        ),
+    ],
+    queue: Annotated[
+        str | None,
+        Field(
+            description="Restrict to one queue value. Use schema://tickets to see valid values."
+        ),
+    ] = None,
+    priority: Annotated[
+        _PriorityLit | None,
+        Field(description="Restrict to one priority."),
+    ] = None,
+    language: Annotated[
+        _LanguageLit | None,
+        Field(description="Restrict to English, German, or Hebrew tickets."),
+    ] = None,
+    type: Annotated[
+        _TypeLit | None,
+        Field(description="Restrict to one ticket type."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="Filter to tickets whose normalized `tags` list contains these values. Combine with `tags_mode`."
+        ),
+    ] = None,
+    tags_mode: Annotated[
+        Literal["and", "or"],
+        Field(
+            description="'and' = ticket must contain ALL listed tags; 'or' = ANY of them."
+        ),
+    ] = "and",
+    limit: Annotated[
+        int, Field(description="Max hits to return. Default 10, hard cap 50.")
+    ] = 10,
 ) -> list[dict]:
     return search_tickets_module.search_tickets_impl(
-        get_store(), get_query_embedder(),
-        q=q, queue=queue, priority=priority, language=language, type=type,
-        tags=tags, tags_mode=tags_mode, limit=limit,
+        get_store(),
+        get_query_embedder(),
+        q=q,
+        queue=queue,
+        priority=priority,
+        language=language,
+        type=type,
+        tags=tags,
+        tags_mode=tags_mode,
+        limit=limit,
     )
 
 
 # --- aggregate_tickets ---------------------------------------------------
 
+
 @mcp.tool(description=aggregate_tickets_module.DESCRIPTION)
 def aggregate_tickets(
-    group_by: Annotated[Literal["queue", "priority", "language", "type", "tags"], Field(description="Field to group rows by.")],
-    queue: Annotated[str | None, Field(description="Restrict to one queue value.")] = None,
-    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Restrict to one priority.")] = None,
-    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Restrict to English, German, or Hebrew.")] = None,
-    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Restrict to one ticket type.")] = None,
-    tags: Annotated[list[str] | None, Field(description="Filter to tickets whose normalized `tags` list contains these values.")] = None,
-    tags_mode: Annotated[Literal["and", "or"], Field(description="'and' = all listed tags; 'or' = any.")] = "and",
+    group_by: Annotated[
+        Literal["queue", "priority", "language", "type", "tags"],
+        Field(description="Field to group rows by."),
+    ],
+    queue: Annotated[
+        str | None, Field(description="Restrict to one queue value.")
+    ] = None,
+    priority: Annotated[
+        _PriorityLit | None,
+        Field(description="Restrict to one priority."),
+    ] = None,
+    language: Annotated[
+        _LanguageLit | None,
+        Field(description="Restrict to English, German, or Hebrew."),
+    ] = None,
+    type: Annotated[
+        _TypeLit | None,
+        Field(description="Restrict to one ticket type."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="Filter to tickets whose normalized `tags` list contains these values."
+        ),
+    ] = None,
+    tags_mode: Annotated[
+        Literal["and", "or"], Field(description="'and' = all listed tags; 'or' = any.")
+    ] = "and",
 ) -> list[dict]:
     return aggregate_tickets_module.aggregate_tickets_impl(
         get_store(),
-        group_by=group_by, queue=queue, priority=priority, language=language,
-        type=type, tags=tags, tags_mode=tags_mode,
+        group_by=group_by,
+        queue=queue,
+        priority=priority,
+        language=language,
+        type=type,
+        tags=tags,
+        tags_mode=tags_mode,
     )
 
 
 # --- create_ticket --------------------------------------------------------
 
+
 @mcp.tool(description=create_ticket_module.DESCRIPTION)
 def create_ticket(
-    subject: Annotated[str, Field(description="Ticket subject line. Required, non-empty.")],
+    subject: Annotated[
+        str, Field(description="Ticket subject line. Required, non-empty.")
+    ],
     body: Annotated[str, Field(description="Ticket body text. Required, non-empty.")],
-    answer: Annotated[str, Field(description="Optional resolved answer if the ticket already has one. Empty by default.")] = "",
-    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="Optional ticket type.")] = None,
-    queue: Annotated[str | None, Field(description="Optional queue. Any string — schema://tickets lists the 52 dataset values.")] = None,
-    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="Optional priority.")] = None,
-    language: Annotated[Literal["en", "de", "he"] | None, Field(description="Optional language tag.")] = None,
-    version: Annotated[str, Field(description="Optional product/version label. Empty by default.")] = "",
-    tags: Annotated[list[str] | None, Field(description="Optional list of tags (already normalized — non-empty strings only).")] = None,
+    answer: Annotated[
+        str,
+        Field(
+            description="Optional resolved answer if the ticket already has one. Empty by default."
+        ),
+    ] = "",
+    type: Annotated[
+        _TypeLit | None,
+        Field(description="Optional ticket type."),
+    ] = None,
+    queue: Annotated[
+        str | None,
+        Field(
+            description="Optional queue. Any string — schema://tickets lists the 52 dataset values."
+        ),
+    ] = None,
+    priority: Annotated[
+        _PriorityLit | None,
+        Field(description="Optional priority."),
+    ] = None,
+    language: Annotated[
+        _LanguageLit | None, Field(description="Optional language tag.")
+    ] = None,
+    version: Annotated[
+        str, Field(description="Optional product/version label. Empty by default.")
+    ] = "",
+    tags: Annotated[
+        list[str] | None,
+        Field(
+            description="Optional list of tags (already normalized — non-empty strings only)."
+        ),
+    ] = None,
 ) -> dict:
     return create_ticket_module.create_ticket_impl(
-        get_store(), get_passage_embedder(),
-        subject=subject, body=body, answer=answer,
-        type=type or "", queue=queue or "", priority=priority or "",
-        language=language or "", version=version, tags=tags,
+        get_store(),
+        get_passage_embedder(),
+        subject=subject,
+        body=body,
+        answer=answer,
+        type=type or "",
+        queue=queue or "",
+        priority=priority or "",
+        language=language or "",
+        version=version,
+        tags=tags,
     )
 
 
 # --- update_ticket --------------------------------------------------------
 
+
 @mcp.tool(description=update_ticket_module.DESCRIPTION)
 def update_ticket(
     ticket_id: Annotated[str, Field(description="12-char id of the ticket to update.")],
-    subject: Annotated[str | None, Field(description="New subject. Omit to keep current.")] = None,
-    body: Annotated[str | None, Field(description="New body text. Omit to keep current.")] = None,
-    answer: Annotated[str | None, Field(description="New answer text. Omit to keep current.")] = None,
-    type: Annotated[Literal["question", "incident", "request", "problem"] | None, Field(description="New ticket type. Omit to keep current.")] = None,
-    queue: Annotated[str | None, Field(description="New queue. Omit to keep current.")] = None,
-    priority: Annotated[Literal["low", "medium", "high", "critical", "info"] | None, Field(description="New priority. Omit to keep current.")] = None,
-    language: Annotated[Literal["en", "de", "he"] | None, Field(description="New language. Omit to keep current.")] = None,
-    version: Annotated[str | None, Field(description="New version label. Omit to keep current.")] = None,
-    tags: Annotated[list[str] | None, Field(description="New tag list (replaces all). Omit to keep current.")] = None,
+    subject: Annotated[
+        str | None, Field(description="New subject. Omit to keep current.")
+    ] = None,
+    body: Annotated[
+        str | None, Field(description="New body text. Omit to keep current.")
+    ] = None,
+    answer: Annotated[
+        str | None, Field(description="New answer text. Omit to keep current.")
+    ] = None,
+    type: Annotated[
+        _TypeLit | None,
+        Field(description="New ticket type. Omit to keep current."),
+    ] = None,
+    queue: Annotated[
+        str | None, Field(description="New queue. Omit to keep current.")
+    ] = None,
+    priority: Annotated[
+        _PriorityLit | None,
+        Field(description="New priority. Omit to keep current."),
+    ] = None,
+    language: Annotated[
+        _LanguageLit | None,
+        Field(description="New language. Omit to keep current."),
+    ] = None,
+    version: Annotated[
+        str | None, Field(description="New version label. Omit to keep current.")
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(description="New tag list (replaces all). Omit to keep current."),
+    ] = None,
 ) -> dict:
     return update_ticket_module.update_ticket_impl(
-        get_store(), get_passage_embedder(),
+        get_store(),
+        get_passage_embedder(),
         ticket_id=ticket_id,
-        subject=subject, body=body, answer=answer, type=type,
-        queue=queue, priority=priority, language=language,
-        version=version, tags=tags,
+        subject=subject,
+        body=body,
+        answer=answer,
+        type=type,
+        queue=queue,
+        priority=priority,
+        language=language,
+        version=version,
+        tags=tags,
     )
 
 
 # --- delete_ticket --------------------------------------------------------
 
+
 @mcp.tool(description=delete_ticket_module.DESCRIPTION)
 def delete_ticket(
-    ticket_id: Annotated[str, Field(description="12-char id of the ticket to delete. Confirm with the user first — deletion is irreversible.")],
+    ticket_id: Annotated[
+        str,
+        Field(
+            description="12-char id of the ticket to delete. Confirm with the user first — deletion is irreversible."
+        ),
+    ],
 ) -> dict:
     return delete_ticket_module.delete_ticket_impl(get_store(), ticket_id)
 
 
 # --- draft_reply prompt --------------------------------------------------
 
+
 @mcp.prompt(description=draft_reply_module.DESCRIPTION)
 def draft_reply(
-    ticket_id: Annotated[str, Field(description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft.")],
-    target_language: Annotated[str | None, Field(description="Language to write the draft in. Defaults to the ticket's own language field.")] = None,
+    ticket_id: Annotated[
+        str,
+        Field(
+            description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft."
+        ),
+    ],
+    target_language: Annotated[
+        str | None,
+        Field(
+            description="Language to write the draft in. Defaults to the ticket's own language field."
+        ),
+    ] = None,
 ) -> str:
     # FastMCP's prompt protocol needs a string (or PromptMessage list); the impl
     # returns a dict so unit tests can assert on metadata, so unwrap here.
     return draft_reply_module.draft_reply_impl(
-        get_store(), get_query_embedder(),
-        ticket_id=ticket_id, target_language=target_language,
+        get_store(),
+        get_query_embedder(),
+        ticket_id=ticket_id,
+        target_language=target_language,
     )["prompt"]
 
 

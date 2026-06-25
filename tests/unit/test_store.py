@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from mcp_cst.data.store import TicketStore, TicketRecord
+from mcp_cst.data.store import TicketStore
 
 
 def fake_embed(texts: list[str]) -> np.ndarray:
@@ -53,7 +53,9 @@ def test_get_ticket_verbatim(store, raw_ticket_rows):
     for i in range(1, 7):
         assert getattr(rec, f"tag_{i}") == raw_ticket_rows[0][f"tag_{i}"]
     # normalized tags list: drops empties
-    expected_tags = [t for t in (raw_ticket_rows[0][f"tag_{i}"] for i in range(1, 7)) if t]
+    expected_tags = [
+        t for t in (raw_ticket_rows[0][f"tag_{i}"] for i in range(1, 7)) if t
+    ]
     assert rec.tags == expected_tags
 
 
@@ -112,12 +114,17 @@ def test_add_ticket_unique_ids(store):
 
 def test_update_ticket_changes_fields(store):
     new_id = store.add_ticket(
-        subject="Initial", body="Initial body", embedder=fake_embed,
-        queue="Customer Service", priority="low",
+        subject="Initial",
+        body="Initial body",
+        embedder=fake_embed,
+        queue="Customer Service",
+        priority="low",
     )
     changed = store.update_ticket(
-        new_id, embedder=fake_embed,
-        subject="Updated subject", priority="high",
+        new_id,
+        embedder=fake_embed,
+        subject="Updated subject",
+        priority="high",
     )
     assert changed is True
     rec = store.get(new_id)
@@ -128,12 +135,17 @@ def test_update_ticket_changes_fields(store):
 
 
 def test_update_ticket_unknown_id_returns_false(store):
-    assert store.update_ticket("nonexistent0", embedder=fake_embed, subject="x") is False
+    assert (
+        store.update_ticket("nonexistent0", embedder=fake_embed, subject="x") is False
+    )
 
 
 def test_update_ticket_replaces_tags(store):
     new_id = store.add_ticket(
-        subject="s", body="b", embedder=fake_embed, tags=["A", "B", "C"],
+        subject="s",
+        body="b",
+        embedder=fake_embed,
+        tags=["A", "B", "C"],
     )
     store.update_ticket(new_id, embedder=fake_embed, tags=["X"])
     rec = store.get(new_id)
@@ -159,12 +171,28 @@ def test_delete_ticket_unknown_id_returns_false(store):
 def test_ingest_coerces_null_fields(tmp_path):
     """Regression: HF rows with None values must not poison the store."""
     rows = [
-        {"subject": "ok", "body": "ok", "answer": None, "type": None,
-         "queue": "Q", "priority": "low", "language": "en", "version": None,
-         "tag_1": "", "tag_2": "", "tag_3": "", "tag_4": "", "tag_5": "", "tag_6": ""},
+        {
+            "subject": "ok",
+            "body": "ok",
+            "answer": None,
+            "type": None,
+            "queue": "Q",
+            "priority": "low",
+            "language": "en",
+            "version": None,
+            "tag_1": "",
+            "tag_2": "",
+            "tag_3": "",
+            "tag_4": "",
+            "tag_5": "",
+            "tag_6": "",
+        },
     ]
     s = TicketStore.create(
-        path=tmp_path / "null-store", revision="r", rows=rows, embedder=fake_embed,
+        path=tmp_path / "null-store",
+        revision="r",
+        rows=rows,
+        embedder=fake_embed,
     )
     rec = s.get(s.all_ids()[0])
     assert rec.answer == ""

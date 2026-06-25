@@ -1,7 +1,6 @@
 """schema://tickets resource — describes the dataset shape."""
 
 from __future__ import annotations
-import json
 
 from ..docs import make_description
 
@@ -18,17 +17,41 @@ DESCRIPTION = make_description(
 def schema_payload() -> dict:
     return {
         "columns": [
-            {"name": "id", "description": "12-char hex derived as sha1(revision || row_index)."},
+            {
+                "name": "id",
+                "description": "12-char hex derived as sha1(revision || row_index).",
+            },
             {"name": "subject", "description": "Ticket subject line, verbatim."},
             {"name": "body", "description": "Ticket body, verbatim."},
-            {"name": "answer", "description": "Support team's reply, verbatim. May be empty."},
-            {"name": "type", "description": "Ticket type. One of: question, incident, request, problem."},
-            {"name": "queue", "description": "Queue assigned to the ticket. 52 possible values."},
-            {"name": "priority", "description": "Priority. One of: low, medium, high, critical, info."},
+            {
+                "name": "answer",
+                "description": "Support team's reply, verbatim. May be empty.",
+            },
+            {
+                "name": "type",
+                "description": "Ticket type. One of: question, incident, request, problem.",
+            },
+            {
+                "name": "queue",
+                "description": "Queue assigned to the ticket. 52 possible values.",
+            },
+            {
+                "name": "priority",
+                "description": "Priority. One of: low, medium, high, critical, info.",
+            },
             {"name": "language", "description": "Language. One of: en, de, he."},
-            {"name": "version", "description": "Product version associated with the ticket."},
-            {"name": "tag_1..tag_6", "description": "Original six tag slots, preserved verbatim."},
-            {"name": "tags", "description": "Normalized List[str] of non-empty tags; use this for filtering and aggregation."},
+            {
+                "name": "version",
+                "description": "Product version associated with the ticket.",
+            },
+            {
+                "name": "tag_1..tag_6",
+                "description": "Original six tag slots, preserved verbatim.",
+            },
+            {
+                "name": "tags",
+                "description": "Normalized List[str] of non-empty tags; use this for filtering and aggregation.",
+            },
         ],
         "valid_filters": {
             "language": ["en", "de", "he"],
@@ -48,6 +71,3 @@ def schema_payload() -> dict:
         ],
     }
 
-
-def schema_resource_body() -> str:
-    return json.dumps(schema_payload(), indent=2)

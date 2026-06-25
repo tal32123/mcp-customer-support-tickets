@@ -10,7 +10,7 @@ from ..errors import ErrorCode, McpCstError
 
 
 FILTER_FIELDS = {"queue", "priority", "language", "type"}
-SNIPPET_LEN = 240
+_TAG_FILTER_KEYS = frozenset({"tags", "tags_mode"})
 
 
 def reciprocal_rank_fusion(rank_lists: list[list[str]], k: int = 60) -> list[str]:
@@ -30,10 +30,12 @@ def _build_where(filters: dict) -> str | None:
     """
     clauses: list[str] = []
     for key, value in filters.items():
-        if key in {"tags", "tags_mode"}:
+        if key in _TAG_FILTER_KEYS:
             continue
         if key not in FILTER_FIELDS:
-            raise McpCstError(ErrorCode.UNSUPPORTED_FILTER, f"unsupported filter field: {key}")
+            raise McpCstError(
+                ErrorCode.UNSUPPORTED_FILTER, f"unsupported filter field: {key}"
+            )
         # Escape single quotes
         safe = str(value).replace("'", "''")
         clauses.append(f"{key} = '{safe}'")
@@ -46,11 +48,11 @@ def _post_filter_tags(rows: list[dict], filters: dict) -> list[dict]:
     if not tags:
         return rows
     if mode not in {"and", "or"}:
-        raise McpCstError(ErrorCode.UNSUPPORTED_FILTER, "tags_mode must be 'and' or 'or'")
-    if mode == "and":
-        return [r for r in rows if all(t in (r.get("tags") or []) for t in tags)]
-    else:
-        return [r for r in rows if any(t in (r.get("tags") or []) for t in tags)]
+        raise McpCstError(
+            ErrorCode.UNSUPPORTED_FILTER, "tags_mode must be 'and' or 'or'"
+        )
+    pred = all if mode == "and" else any
+    return [r for r in rows if pred(t in (r.get("tags") or []) for t in tags)]
 
 
 def hybrid_search(
@@ -89,14 +91,16 @@ def hybrid_search(
         r = by_id.get(rid)
         if r is None:
             continue
-        snippet = (r["body"] or "")[:SNIPPET_LEN]
-        out.append({
-            "id": rid,
-            "subject": r["subject"],
-            "snippet": snippet,
-            "language": r["language"],
-            "queue": r["queue"],
-            "priority": r["priority"],
-            "score_rank": ix + 1,
-        })
+        snippet = (r["body"] or "")[:240]
+        out.append(
+            {
+                "id": rid,
+                "subject": r["subject"],
+                "snippet": snippet,
+                "language": r["language"],
+                "queue": r["queue"],
+                "priority": r["priority"],
+                "score_rank": ix + 1,
+            }
+        )
     return out

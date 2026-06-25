@@ -1,5 +1,3 @@
-import os
-import pytest
 from mcp_cst.config import Config
 
 

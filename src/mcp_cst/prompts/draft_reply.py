@@ -7,7 +7,7 @@ API keys.
 """
 
 from __future__ import annotations
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import numpy as np
 
@@ -46,7 +46,12 @@ _TYPE_GUIDANCE = {
     "problem": "Acknowledge the underlying problem, propose the workaround or fix that prior tickets converged on, and set expectations for any permanent fix.",
 }
 
-_GENERIC_GUIDANCE = "Acknowledge the customer's message and reply with the resolution pattern from the closest prior ticket."
+class Grounding(NamedTuple):
+    id: str
+    subject: str
+    body: str
+    answer: str
+    similarity: float
 
 
 def select_grounding(
@@ -55,7 +60,7 @@ def select_grounding(
     *,
     target_id: str,
     target_text: str,
-) -> list[tuple[str, str, str, str, float]]:
+) -> list[Grounding]:
     """Return up to 5 (id, subject, body, answer, similarity) tuples.
 
     Filters: cosine similarity >= 0.70 AND non-empty answer AND id != target.
@@ -64,11 +69,9 @@ def select_grounding(
     """
     qvec = embedder([target_text])[0]
     candidates = (
-        store.table.search(qvec.tolist(), query_type="vector")
-        .limit(50)
-        .to_list()
+        store.table.search(qvec.tolist(), query_type="vector").limit(50).to_list()
     )
-    scored: list[tuple[str, str, str, str, float]] = []
+    scored: list[Grounding] = []
     for r in candidates:
         if r["id"] == target_id:
             continue
@@ -86,12 +89,12 @@ def select_grounding(
         sim = float(np.dot(qvec, cand_vec))
         if sim < SIMILARITY_THRESHOLD:
             continue
-        scored.append((r["id"], r["subject"], r["body"], r["answer"], sim))
+        scored.append(Grounding(r["id"], r["subject"], r["body"], r["answer"], sim))
     scored.sort(key=lambda t: t[4], reverse=True)
     return scored[:MAX_GROUNDING]
 
 
-def _grounding_block(grounding: list[tuple[str, str, str, str, float]]) -> str:
+def _grounding_block(grounding: list[Grounding]) -> str:
     out = ["Prior similar tickets and how they were answered (grounding examples):"]
     for gid, subj, body, ans, sim in grounding:
         out.append(
@@ -110,17 +113,20 @@ def _scaffold(
     target_language: str,
     queue: str,
     type_: str,
-    grounding_ids: list[str],
+    grounding_count: int,
+    grounding_ids_str: str,
 ) -> str:
-    guidance = _TYPE_GUIDANCE.get(type_, _GENERIC_GUIDANCE)
-    ids = ", ".join(grounding_ids)
+    guidance = _TYPE_GUIDANCE.get(
+        type_,
+        "Acknowledge the customer's message and reply with the resolution pattern from the closest prior ticket.",
+    )
     return (
         "Write a customer-support reply to the target ticket above.\n\n"
         f"Queue: {escape_text(queue)} -- use the vocabulary appropriate to that queue.\n"
         f"Ticket type: {escape_text(type_)} -- {guidance}\n"
         f"Language: write the reply in {escape_text(target_language)}.\n\n"
         "Structure:\n"
-        f"  1. Open with: \"Based on ticket {target_id}, drawing on {len(grounding_ids)} prior similar replies ({ids}): ...\"\n"
+        f'  1. Open with: "Based on ticket {target_id}, drawing on {grounding_count} prior similar replies ({grounding_ids_str}): ..."\n'
         "  2. Acknowledge the customer's situation.\n"
         "  3. Apply the resolution pattern from the most similar prior ticket(s) above.\n"
         "  4. Close with a clear next step (link, timeline, follow-up).\n\n"
@@ -140,7 +146,9 @@ def draft_reply_impl(
 ) -> dict:
     target = store.get(ticket_id)
     if target is None:
-        raise McpCstError(ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}")
+        raise McpCstError(
+            ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}"
+        )
     if looks_like_injection(target.body) or looks_like_injection(target.subject):
         raise McpCstError(
             ErrorCode.INJECTION_DETECTED,
@@ -150,7 +158,9 @@ def draft_reply_impl(
     target_language = target_language or target.language
     target_text = f"{target.subject}\n{target.body}"
 
-    grounding = select_grounding(store, embedder, target_id=ticket_id, target_text=target_text)
+    grounding = select_grounding(
+        store, embedder, target_id=ticket_id, target_text=target_text
+    )
     if not grounding:
         raise McpCstError(
             ErrorCode.NO_GROUNDING_AVAILABLE,
@@ -158,6 +168,7 @@ def draft_reply_impl(
         )
 
     grounding_ids = [g[0] for g in grounding]
+    grounding_ids_str = ", ".join(grounding_ids)
     parts = [
         "Target ticket to reply to:",
         wrap_ticket(ticket_id=ticket_id, subject=target.subject, body=target.body),
@@ -169,7 +180,8 @@ def draft_reply_impl(
             target_language=target_language,
             queue=target.queue,
             type_=target.type,
-            grounding_ids=grounding_ids,
+            grounding_count=len(grounding_ids),
+            grounding_ids_str=grounding_ids_str,
         ),
     ]
     prompt = "\n".join(parts)

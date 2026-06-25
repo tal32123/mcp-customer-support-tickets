@@ -45,27 +45,41 @@ def _normalize_tags(row: dict) -> list[str]:
     return [v for v in (row.get(c, "") for c in _TAG_COLS) if v]
 
 
-def _text_search(row: dict, tags: list[str]) -> str:
-    return f"{row['subject']}\n{row['body']}\n{' '.join(tags)}"
+def _text_search(subject: str, body: str, tags: list[str]) -> str:
+    return f"{subject}\n{body}\n{' '.join(tags)}"
+
+
+def _tag_cols(tags: list[str]) -> dict[str, str]:
+    padded = (tags + [""] * len(_TAG_COLS))[: len(_TAG_COLS)]
+    return {col: padded[i] for i, col in enumerate(_TAG_COLS)}
+
+
+def _id_where(ticket_id: str) -> str:
+    # Escape single quotes in the id to prevent WHERE-clause injection.
+    # ids are 12-char hex by construction, but the parameter is callable
+    # from outside and must be treated as untrusted.
+    return f"id = '{ticket_id.replace(chr(39), chr(39) * 2)}'"
 
 
 def _schema(embedding_dim: int) -> pa.Schema:
-    return pa.schema([
-        pa.field("id", pa.string()),
-        pa.field("row_index", pa.int32()),
-        pa.field("subject", pa.string()),
-        pa.field("body", pa.string()),
-        pa.field("answer", pa.string()),
-        pa.field("type", pa.string()),
-        pa.field("queue", pa.string()),
-        pa.field("priority", pa.string()),
-        pa.field("language", pa.string()),
-        pa.field("version", pa.string()),
-        *(pa.field(c, pa.string()) for c in _TAG_COLS),
-        pa.field("tags", pa.list_(pa.string())),
-        pa.field("text_search", pa.string()),
-        pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
-    ])
+    return pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("row_index", pa.int32()),
+            pa.field("subject", pa.string()),
+            pa.field("body", pa.string()),
+            pa.field("answer", pa.string()),
+            pa.field("type", pa.string()),
+            pa.field("queue", pa.string()),
+            pa.field("priority", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("version", pa.string()),
+            *(pa.field(c, pa.string()) for c in _TAG_COLS),
+            pa.field("tags", pa.list_(pa.string())),
+            pa.field("text_search", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
+        ]
+    )
 
 
 class TicketStore:
@@ -94,23 +108,35 @@ class TicketStore:
         texts_to_embed: list[str] = []
         for i, row in enumerate(rows):
             tags = _normalize_tags(row)
-            text = _text_search(row, tags)
+            text = _text_search(row["subject"], row["body"], tags)
             texts_to_embed.append(text)
-            records.append({
-                "id": derive_id(revision, i),
-                "row_index": i,
-                # `or ""` (not the dict default) coerces explicit None values
-                # from HF rows — `.get(k, "")` only fires when the key is
-                # missing, so nullable cells would otherwise land as None and
-                # blow up downstream XML escapers.
-                **{k: (row.get(k) or "") for k in (
-                    "subject", "body", "answer", "type", "queue",
-                    "priority", "language", "version", *_TAG_COLS,
-                )},
-                "tags": tags,
-                "text_search": text,
-                "vector": None,  # filled below
-            })
+            records.append(
+                {
+                    "id": derive_id(revision, i),
+                    "row_index": i,
+                    # `or ""` (not the dict default) coerces explicit None values
+                    # from HF rows — `.get(k, "")` only fires when the key is
+                    # missing, so nullable cells would otherwise land as None and
+                    # blow up downstream XML escapers.
+                    **{
+                        k: (row.get(k) or "")
+                        for k in (
+                            "subject",
+                            "body",
+                            "answer",
+                            "type",
+                            "queue",
+                            "priority",
+                            "language",
+                            "version",
+                            *_TAG_COLS,
+                        )
+                    },
+                    "tags": tags,
+                    "text_search": text,
+                    "vector": None,  # filled below
+                }
+            )
 
         vectors = embedder(texts_to_embed)
         for rec, vec in zip(records, vectors):
@@ -167,11 +193,7 @@ class TicketStore:
         return list(arr)
 
     def get(self, ticket_id: str) -> TicketRecord | None:
-        # Escape single quotes in the id to prevent WHERE-clause injection.
-        # ids are 12-char hex by construction, but the parameter is callable
-        # from outside and must be treated as untrusted.
-        safe = ticket_id.replace("'", "''")
-        rows = self._table.search().where(f"id = '{safe}'").limit(1).to_list()
+        rows = self._table.search().where(_id_where(ticket_id)).limit(1).to_list()
         if not rows:
             return None
         r = rows[0]
@@ -185,8 +207,12 @@ class TicketStore:
             priority=r["priority"],
             language=r["language"],
             version=r["version"],
-            tag_1=r["tag_1"], tag_2=r["tag_2"], tag_3=r["tag_3"],
-            tag_4=r["tag_4"], tag_5=r["tag_5"], tag_6=r["tag_6"],
+            tag_1=r["tag_1"],
+            tag_2=r["tag_2"],
+            tag_3=r["tag_3"],
+            tag_4=r["tag_4"],
+            tag_5=r["tag_5"],
+            tag_6=r["tag_6"],
             tags=list(r["tags"]),
         )
 
@@ -220,11 +246,10 @@ class TicketStore:
         interactive insert, not for bulk import.
         """
         tag_list = list(tags or [])
-        text_search_value = f"{subject}\n{body}\n{' '.join(tag_list)}"
+        text_search_value = _text_search(subject, body, tag_list)
         next_index = self._table.count_rows()
         new_id = derive_id(self.revision, next_index)
         vector = embedder([text_search_value])[0].tolist()
-        padded = (tag_list + [""] * 6)[:6]
         record = {
             "id": new_id,
             "row_index": next_index,
@@ -236,7 +261,7 @@ class TicketStore:
             "priority": priority,
             "language": language,
             "version": version,
-            **{f"tag_{i + 1}": padded[i] for i in range(6)},
+            **_tag_cols(tag_list),
             "tags": tag_list,
             "text_search": text_search_value,
             "vector": vector,
@@ -268,46 +293,52 @@ class TicketStore:
         `id` and `row_index` are preserved so existing references keep
         working.
         """
-        existing = self.get(ticket_id)
-        if existing is None:
+        raw = self._table.search().where(_id_where(ticket_id)).limit(1).to_list()
+        if not raw:
             return False
+        existing = raw[0]
 
         merged = {
-            "subject": subject if subject is not None else existing.subject,
-            "body": body if body is not None else existing.body,
-            "answer": answer if answer is not None else existing.answer,
-            "type": type if type is not None else existing.type,
-            "queue": queue if queue is not None else existing.queue,
-            "priority": priority if priority is not None else existing.priority,
-            "language": language if language is not None else existing.language,
-            "version": version if version is not None else existing.version,
-            "tags": list(tags) if tags is not None else list(existing.tags),
+            "subject": subject if subject is not None else existing["subject"],
+            "body": body if body is not None else existing["body"],
+            "answer": answer if answer is not None else existing["answer"],
+            "type": type if type is not None else existing["type"],
+            "queue": queue if queue is not None else existing["queue"],
+            "priority": priority if priority is not None else existing["priority"],
+            "language": language if language is not None else existing["language"],
+            "version": version if version is not None else existing["version"],
+            "tags": list(tags) if tags is not None else list(existing["tags"]),
         }
-        text_search_value = (
-            f"{merged['subject']}\n{merged['body']}\n{' '.join(merged['tags'])}"
+        text_search_value = _text_search(
+            merged["subject"], merged["body"], merged["tags"]
         )
         vector = embedder([text_search_value])[0].tolist()
-        padded = (merged["tags"] + [""] * 6)[:6]
-        # Pull the original row_index off the LanceDB row so we can preserve
-        # it across the delete+insert cycle — the id is stable but row_index
-        # is what we use for stable ordering in `all_ids`.
-        safe = ticket_id.replace("'", "''")
-        raw = self._table.search().where(f"id = '{safe}'").limit(1).to_list()[0]
-        row_index = raw["row_index"]
 
         record = {
             "id": ticket_id,
-            "row_index": row_index,
-            **{k: merged[k] for k in (
-                "subject", "body", "answer", "type",
-                "queue", "priority", "language", "version",
-            )},
-            **{f"tag_{i + 1}": padded[i] for i in range(6)},
+            # Preserve the original row_index across the delete+insert cycle —
+            # the id is stable but row_index is what we use for stable
+            # ordering in `all_ids`.
+            "row_index": existing["row_index"],
+            **{
+                k: merged[k]
+                for k in (
+                    "subject",
+                    "body",
+                    "answer",
+                    "type",
+                    "queue",
+                    "priority",
+                    "language",
+                    "version",
+                )
+            },
+            **_tag_cols(merged["tags"]),
             "tags": merged["tags"],
             "text_search": text_search_value,
             "vector": vector,
         }
-        self._table.delete(f"id = '{safe}'")
+        self._table.delete(_id_where(ticket_id))
         self._table.add([record])
         self._table.create_fts_index("text_search", replace=True)
         return True
@@ -325,7 +356,6 @@ class TicketStore:
         """
         if self.get(ticket_id) is None:
             return False
-        safe = ticket_id.replace("'", "''")
-        self._table.delete(f"id = '{safe}'")
+        self._table.delete(_id_where(ticket_id))
         self._table.create_fts_index("text_search", replace=True)
         return True

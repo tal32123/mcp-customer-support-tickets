@@ -25,5 +25,7 @@ DESCRIPTION = make_description(
 
 def delete_ticket_impl(store: TicketStore, ticket_id: str) -> dict:
     if not store.delete_ticket(ticket_id):
-        raise McpCstError(ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}")
+        raise McpCstError(
+            ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}"
+        )
     return {"id": ticket_id, "deleted": True}

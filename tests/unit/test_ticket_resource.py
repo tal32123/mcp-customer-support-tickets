@@ -11,7 +11,10 @@ def fake_embed(texts):
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "s", revision="r", rows=raw_ticket_rows, embedder=fake_embed,
+        path=tmp_path / "s",
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=fake_embed,
     )
 
 
@@ -23,4 +26,5 @@ def test_body_returns_wrapped(store):
 
 def test_description_contains_g4():
     from mcp_cst.docs import G4_REMINDER
+
     assert G4_REMINDER in DESCRIPTION

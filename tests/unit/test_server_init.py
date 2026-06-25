@@ -13,7 +13,10 @@ import mcp_cst.server as server
 def reset_globals():
     """Snap server module globals so each test starts clean."""
     saved = (
-        server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
+        server._CFG,
+        server._STORE,
+        server._EMBED_PASSAGES,
+        server._EMBED_QUERIES,
     )
     server._CFG = None
     server._STORE = None
@@ -21,7 +24,10 @@ def reset_globals():
     server._EMBED_QUERIES = None
     yield
     (
-        server._CFG, server._STORE, server._EMBED_PASSAGES, server._EMBED_QUERIES,
+        server._CFG,
+        server._STORE,
+        server._EMBED_PASSAGES,
+        server._EMBED_QUERIES,
     ) = saved
 
 
@@ -31,7 +37,9 @@ def test_make_embedders_loads_model_once(reset_globals):
     fake_model = MagicMock()
     fake_model.encode.return_value = np.zeros((1, 384), dtype=np.float32)
 
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_model) as ctor:
+    with patch(
+        "sentence_transformers.SentenceTransformer", return_value=fake_model
+    ) as ctor:
         embed_passages, embed_queries = server._make_embedders("test-model")
         embed_passages(["a", "b"])
         embed_queries(["c"])
@@ -71,8 +79,14 @@ def test_init_is_idempotent(reset_globals, tmp_path, monkeypatch):
 
     fake_store = MagicMock()
 
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_model) as ctor, \
-         patch("mcp_cst.server.build_store_from_huggingface", return_value=fake_store) as build_fn:
+    with (
+        patch(
+            "sentence_transformers.SentenceTransformer", return_value=fake_model
+        ) as ctor,
+        patch(
+            "mcp_cst.server.build_store_from_huggingface", return_value=fake_store
+        ) as build_fn,
+    ):
         server._init()
         server._init()
         server._init()
@@ -82,7 +96,9 @@ def test_init_is_idempotent(reset_globals, tmp_path, monkeypatch):
     assert build_fn.call_count == 1
 
 
-def test_init_opens_existing_store_without_rebuild(reset_globals, tmp_path, monkeypatch, raw_ticket_rows):
+def test_init_opens_existing_store_without_rebuild(
+    reset_globals, tmp_path, monkeypatch, raw_ticket_rows
+):
     """H1: when a valid store exists at cfg.store_path, _init() must open it
     rather than re-download and rebuild from HuggingFace. This is the
     production restart hot-path."""
@@ -99,16 +115,18 @@ def test_init_opens_existing_store_without_rebuild(reset_globals, tmp_path, monk
     # Pre-build a valid store at the exact path Config.from_env will compute.
     cfg = server.Config.from_env()
     TicketStore.create(
-        path=cfg.store_path, revision=cfg.dataset_revision,
-        rows=raw_ticket_rows[:10], embedder=fixture_embedder,
+        path=cfg.store_path,
+        revision=cfg.dataset_revision,
+        rows=raw_ticket_rows[:10],
+        embedder=fixture_embedder,
     )
 
-    with patch("sentence_transformers.SentenceTransformer", return_value=fake_model), \
-         patch("mcp_cst.server.build_store_from_huggingface") as build_fn:
+    with (
+        patch("sentence_transformers.SentenceTransformer", return_value=fake_model),
+        patch("mcp_cst.server.build_store_from_huggingface") as build_fn,
+    ):
         server._init()
 
     build_fn.assert_not_called()
     assert server._STORE is not None
     assert server._STORE.row_count() == 10
-
-

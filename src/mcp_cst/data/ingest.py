@@ -11,6 +11,8 @@ from .store import TicketStore
 
 ProgressFn = Callable[[int, int], None]
 
+_BATCH_SIZE = 64
+
 
 def build_store_from_rows(
     *,
@@ -19,7 +21,6 @@ def build_store_from_rows(
     revision: str,
     embedder: Callable[[list[str]], np.ndarray],
     on_progress: ProgressFn | None = None,
-    batch_size: int = 64,
 ) -> TicketStore:
     """Build a fresh store from a list of dict rows.
 
@@ -30,8 +31,8 @@ def build_store_from_rows(
 
     def batched(texts: list[str]) -> np.ndarray:
         chunks: list[np.ndarray] = []
-        for i in range(0, len(texts), batch_size):
-            chunk = embedder(texts[i:i + batch_size])
+        for i in range(0, len(texts), _BATCH_SIZE):
+            chunk = embedder(texts[i : i + _BATCH_SIZE])
             chunks.append(chunk)
             done[0] += chunk.shape[0]
             if on_progress is not None:
@@ -60,6 +61,7 @@ def build_store_from_huggingface(
     server startup if no cached store exists.
     """
     from datasets import load_dataset  # local import: heavy
+
     ds = load_dataset(dataset_id, revision=revision, split="train")
     rows = [dict(r) for r in ds]
     return build_store_from_rows(

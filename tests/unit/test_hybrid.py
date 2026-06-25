@@ -32,13 +32,20 @@ def deterministic_embedder(texts):
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "s", revision="r", rows=raw_ticket_rows, embedder=deterministic_embedder,
+        path=tmp_path / "s",
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=deterministic_embedder,
     )
 
 
 def test_hybrid_search_returns_ids(store):
     hits = hybrid_search(
-        store, query="login", filters={}, embedder=deterministic_embedder, limit=5,
+        store,
+        query="login",
+        filters={},
+        embedder=deterministic_embedder,
+        limit=5,
     )
     assert 1 <= len(hits) <= 5
     for h in hits:
@@ -50,7 +57,11 @@ def test_hybrid_search_returns_ids(store):
 
 def test_hybrid_search_filters(store):
     hits = hybrid_search(
-        store, query="login", filters={"language": "de"}, embedder=deterministic_embedder, limit=10,
+        store,
+        query="login",
+        filters={"language": "de"},
+        embedder=deterministic_embedder,
+        limit=10,
     )
     # all hits must be German (filter enforced in both BM25 and vector branches)
     # We check by re-fetching each via store
@@ -61,7 +72,11 @@ def test_hybrid_search_filters(store):
 
 def test_hybrid_respects_limit(store):
     hits = hybrid_search(
-        store, query="app", filters={}, embedder=deterministic_embedder, limit=3,
+        store,
+        query="app",
+        filters={},
+        embedder=deterministic_embedder,
+        limit=3,
     )
     assert len(hits) <= 3
 
@@ -92,12 +107,18 @@ def test_hybrid_search_tags_and_vs_or(store):
     """
     common = {"shipping", "urgent"}
     and_hits = hybrid_search(
-        store, query="package", filters={"tags": list(common), "tags_mode": "and"},
-        embedder=deterministic_embedder, limit=50,
+        store,
+        query="package",
+        filters={"tags": list(common), "tags_mode": "and"},
+        embedder=deterministic_embedder,
+        limit=50,
     )
     or_hits = hybrid_search(
-        store, query="package", filters={"tags": list(common), "tags_mode": "or"},
-        embedder=deterministic_embedder, limit=50,
+        store,
+        query="package",
+        filters={"tags": list(common), "tags_mode": "or"},
+        embedder=deterministic_embedder,
+        limit=50,
     )
     and_ids = {h["id"] for h in and_hits}
     or_ids = {h["id"] for h in or_hits}

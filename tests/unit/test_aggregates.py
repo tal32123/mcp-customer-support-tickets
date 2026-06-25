@@ -12,7 +12,10 @@ def fake_embed(texts):
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "store", revision="rev", rows=raw_ticket_rows, embedder=fake_embed,
+        path=tmp_path / "store",
+        revision="rev",
+        rows=raw_ticket_rows,
+        embedder=fake_embed,
     )
 
 
@@ -37,22 +40,31 @@ def test_group_by_tags_explodes(store, raw_ticket_rows):
     total = sum(r["count"] for r in result)
     # ticket with N tags contributes N — sum equals total tag occurrences
     expected = sum(
-        sum(1 for i in range(1, 7) if r[f"tag_{i}"])
-        for r in raw_ticket_rows
+        sum(1 for i in range(1, 7) if r[f"tag_{i}"]) for r in raw_ticket_rows
     )
     assert total == expected
 
 
 def test_tags_and_filter(store, raw_ticket_rows):
     # Pick a tag known to appear in fixture
-    result = group_count(store, group_by="queue", filters={"tags": ["urgent"], "tags_mode": "and"})
+    result = group_count(
+        store, group_by="queue", filters={"tags": ["urgent"], "tags_mode": "and"}
+    )
     # all returned rows have 'urgent' tag — sanity check
     assert isinstance(result, list)
 
 
 def test_tags_or_filter(store):
-    res_and = group_count(store, group_by="queue", filters={"tags": ["urgent", "login"], "tags_mode": "and"})
-    res_or = group_count(store, group_by="queue", filters={"tags": ["urgent", "login"], "tags_mode": "or"})
+    res_and = group_count(
+        store,
+        group_by="queue",
+        filters={"tags": ["urgent", "login"], "tags_mode": "and"},
+    )
+    res_or = group_count(
+        store,
+        group_by="queue",
+        filters={"tags": ["urgent", "login"], "tags_mode": "or"},
+    )
     sum_and = sum(r["count"] for r in res_and)
     sum_or = sum(r["count"] for r in res_or)
     assert sum_or >= sum_and
@@ -72,5 +84,7 @@ def test_unsupported_filter_key(store):
 
 def test_unsupported_tags_mode(store):
     with pytest.raises(McpCstError) as exc:
-        group_count(store, group_by="queue", filters={"tags": ["x"], "tags_mode": "xor"})
+        group_count(
+            store, group_by="queue", filters={"tags": ["x"], "tags_mode": "xor"}
+        )
     assert exc.value.code == ErrorCode.UNSUPPORTED_FILTER

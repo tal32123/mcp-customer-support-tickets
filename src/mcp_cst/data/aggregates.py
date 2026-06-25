@@ -22,13 +22,18 @@ def _apply_filters(df: pl.DataFrame, filters: dict) -> pl.DataFrame:
     tags_mode = filters.get("tags_mode", "and")
 
     if tags_mode not in {"and", "or"}:
-        raise McpCstError(ErrorCode.UNSUPPORTED_FILTER, f"tags_mode must be 'and' or 'or', got {tags_mode!r}")
+        raise McpCstError(
+            ErrorCode.UNSUPPORTED_FILTER,
+            f"tags_mode must be 'and' or 'or', got {tags_mode!r}",
+        )
 
     for key, value in filters.items():
         if key in {"tags", "tags_mode"}:
             continue
         if key not in FILTER_SCALAR_FIELDS:
-            raise McpCstError(ErrorCode.UNSUPPORTED_FILTER, f"unsupported filter field: {key}")
+            raise McpCstError(
+                ErrorCode.UNSUPPORTED_FILTER, f"unsupported filter field: {key}"
+            )
         df = df.filter(pl.col(key) == value)
 
     if tags:
@@ -56,11 +61,16 @@ def group_count(store: TicketStore, *, group_by: str, filters: dict) -> list[dic
     df = _apply_filters(df, filters)
 
     if group_by == "tags":
-        df = df.explode("tags").filter(pl.col("tags").is_not_null() & (pl.col("tags") != ""))
+        df = df.explode("tags").filter(
+            pl.col("tags").is_not_null() & (pl.col("tags") != "")
+        )
 
     counts = (
         df.group_by(group_by)
-          .agg(pl.len().alias("count"))
-          .sort("count", descending=True)
+        .agg(pl.len().alias("count"))
+        .sort("count", descending=True)
     )
-    return [{"group": row[group_by], "count": int(row["count"])} for row in counts.to_dicts()]
+    return [
+        {"group": row[group_by], "count": int(row["count"])}
+        for row in counts.to_dicts()
+    ]

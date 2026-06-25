@@ -20,8 +20,10 @@ def test_build_store_from_rows(tmp_path, raw_ticket_rows):
 
 def test_progress_callback_called(tmp_path, raw_ticket_rows):
     seen = []
+
     def progress(done: int, total: int) -> None:
         seen.append((done, total))
+
     build_store_from_rows(
         rows=raw_ticket_rows,
         path=tmp_path / "store",

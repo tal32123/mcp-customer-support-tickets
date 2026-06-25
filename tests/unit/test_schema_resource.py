@@ -5,7 +5,15 @@ def test_schema_describes_columns():
     payload = schema_payload()
     assert isinstance(payload, dict)
     cols = {c["name"] for c in payload["columns"]}
-    assert {"subject", "body", "answer", "queue", "priority", "language", "tags"}.issubset(cols)
+    assert {
+        "subject",
+        "body",
+        "answer",
+        "queue",
+        "priority",
+        "language",
+        "tags",
+    }.issubset(cols)
 
 
 def test_schema_lists_filter_values():

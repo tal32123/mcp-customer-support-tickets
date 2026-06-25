@@ -44,15 +44,22 @@ def search_tickets_impl(
     limit: int = 10,
 ) -> list[dict]:
     filters: dict = {}
-    if queue is not None: filters["queue"] = queue
-    if priority is not None: filters["priority"] = priority
-    if language is not None: filters["language"] = language
-    if type is not None: filters["type"] = type
-    if tags: filters["tags"] = tags
+    if queue is not None:
+        filters["queue"] = queue
+    if priority is not None:
+        filters["priority"] = priority
+    if language is not None:
+        filters["language"] = language
+    if type is not None:
+        filters["type"] = type
+    if tags:
+        filters["tags"] = tags
     filters["tags_mode"] = tags_mode
 
     capped = max(1, min(limit, HARD_CAP))
-    hits = hybrid_search(store, query=q, filters=filters, embedder=embedder, limit=capped)
+    hits = hybrid_search(
+        store, query=q, filters=filters, embedder=embedder, limit=capped
+    )
     for h in hits:
         h["ticket_uri"] = f"ticket://{h['id']}"
     return hits

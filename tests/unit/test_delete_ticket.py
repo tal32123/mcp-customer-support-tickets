@@ -19,14 +19,19 @@ def fake_embed(texts: list[str]) -> np.ndarray:
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "s", revision="r", rows=raw_ticket_rows, embedder=fake_embed,
+        path=tmp_path / "s",
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=fake_embed,
     )
 
 
 def test_delete_removes_ticket(store):
     tid = create_ticket_impl(
-        store, fake_embed,
-        subject="To be deleted", body="This ticket will be removed.",
+        store,
+        fake_embed,
+        subject="To be deleted",
+        body="This ticket will be removed.",
     )["id"]
     assert store.get(tid) is not None
     out = delete_ticket_impl(store, tid)

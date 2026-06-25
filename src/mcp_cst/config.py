@@ -32,11 +32,17 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         cache_override = os.environ.get("MCP_CST_CACHE_DIR")
-        cache_root = Path(cache_override) if cache_override else Path(platformdirs.user_cache_dir(CACHE_APPNAME))
+        cache_root = (
+            Path(cache_override)
+            if cache_override
+            else Path(platformdirs.user_cache_dir(CACHE_APPNAME))
+        )
 
         return cls(
             dataset_id=DATASET_ID,
-            dataset_revision=os.environ.get("MCP_CST_DATASET_REVISION", DEFAULT_REVISION),
+            dataset_revision=os.environ.get(
+                "MCP_CST_DATASET_REVISION", DEFAULT_REVISION
+            ),
             embedding_model=EMBEDDING_MODEL,
             embedding_dim=EMBEDDING_DIM,
             cache_root=cache_root,

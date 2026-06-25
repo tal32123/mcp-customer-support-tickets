@@ -41,20 +41,15 @@ def update_ticket_impl(
     version: str | None = None,
     tags: list[str] | None = None,
 ) -> dict:
-    if subject is not None and not subject.strip():
-        raise McpCstError(ErrorCode.INVALID_INPUT, "subject cannot be blanked")
-    if body is not None and not body.strip():
-        raise McpCstError(ErrorCode.INVALID_INPUT, "body cannot be blanked")
-    if subject is not None and looks_like_injection(subject):
-        raise McpCstError(
-            ErrorCode.INJECTION_DETECTED,
-            "input contains injection-shaped patterns; refusing",
-        )
-    if body is not None and looks_like_injection(body):
-        raise McpCstError(
-            ErrorCode.INJECTION_DETECTED,
-            "input contains injection-shaped patterns; refusing",
-        )
+    for name, value in (("subject", subject), ("body", body)):
+        if value is not None and not value.strip():
+            raise McpCstError(ErrorCode.INVALID_INPUT, f"{name} cannot be blanked")
+    for value in (subject, body):
+        if value is not None and looks_like_injection(value):
+            raise McpCstError(
+                ErrorCode.INJECTION_DETECTED,
+                "input contains injection-shaped patterns; refusing",
+            )
     ok = store.update_ticket(
         ticket_id=ticket_id,
         embedder=embedder,
@@ -69,5 +64,7 @@ def update_ticket_impl(
         tags=tags,
     )
     if not ok:
-        raise McpCstError(ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}")
+        raise McpCstError(
+            ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}"
+        )
     return {"id": ticket_id, "updated": True}

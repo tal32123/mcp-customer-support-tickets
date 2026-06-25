@@ -12,7 +12,10 @@ def fake_embed(texts):
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "s", revision="r", rows=raw_ticket_rows, embedder=fake_embed,
+        path=tmp_path / "s",
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=fake_embed,
     )
 
 

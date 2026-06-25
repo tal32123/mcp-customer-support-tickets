@@ -20,7 +20,9 @@ DESCRIPTION = make_description(
 def get_ticket_impl(store: TicketStore, ticket_id: str) -> dict:
     rec = store.get(ticket_id)
     if rec is None:
-        raise McpCstError(ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}")
+        raise McpCstError(
+            ErrorCode.TICKET_NOT_FOUND, f"no ticket with id {ticket_id!r}"
+        )
     wrapped = wrap_ticket(
         ticket_id=rec.id,
         subject=rec.subject,

@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 from mcp_cst.tools.search_tickets import search_tickets_impl
 from mcp_cst.data.store import TicketStore
-from mcp_cst.errors import ErrorCode, McpCstError
 
 
 def embed(texts):
@@ -17,7 +16,10 @@ def embed(texts):
 @pytest.fixture
 def store(tmp_path, raw_ticket_rows):
     return TicketStore.create(
-        path=tmp_path / "s", revision="r", rows=raw_ticket_rows, embedder=embed,
+        path=tmp_path / "s",
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=embed,
     )
 
 
@@ -25,7 +27,15 @@ def test_returns_previews(store):
     hits = search_tickets_impl(store, embed, q="login", limit=5)
     assert 1 <= len(hits) <= 5
     for h in hits:
-        assert set(h.keys()) >= {"id", "subject", "snippet", "language", "queue", "priority", "ticket_uri"}
+        assert set(h.keys()) >= {
+            "id",
+            "subject",
+            "snippet",
+            "language",
+            "queue",
+            "priority",
+            "ticket_uri",
+        }
         assert h["ticket_uri"] == f"ticket://{h['id']}"
         assert len(h["snippet"]) <= 240
 

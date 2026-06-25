@@ -24,6 +24,10 @@ def test_make_description_includes_required_sections():
 
 def test_make_description_no_g4():
     desc = make_description(
-        summary="x", use_for="x", not_for="x", output="x", include_g4=False,
+        summary="x",
+        use_for="x",
+        not_for="x",
+        output="x",
+        include_g4=False,
     )
     assert G4_REMINDER not in desc

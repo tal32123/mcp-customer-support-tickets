@@ -9,8 +9,14 @@ from xml.sax.saxutils import escape, quoteattr
 # The dotall flag lets `.` match newlines so multi-line variants like
 # "ignore\nprevious instructions" are still caught.
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE | re.DOTALL),
-    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions?", re.IGNORECASE | re.DOTALL),
+    re.compile(
+        r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions?",
+        re.IGNORECASE | re.DOTALL,
+    ),
     re.compile(r"system\s+prompt\s*[:=]", re.IGNORECASE),
     re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
     re.compile(r"\bnew\s+instructions?\s*[:=]", re.IGNORECASE),
@@ -59,7 +65,9 @@ def looks_like_injection(text: str) -> bool:
     return any(p.search(normalized) for p in _INJECTION_PATTERNS)
 
 
-def wrap_ticket(*, ticket_id: str, subject: str, body: str, extra: dict[str, str] | None = None) -> str:
+def wrap_ticket(
+    *, ticket_id: str, subject: str, body: str, extra: dict[str, str] | None = None
+) -> str:
     """Wrap a ticket's fields in <ticket> tags with XML-escaped content.
 
     Output is intended to be embedded in LLM context as untrusted data.
@@ -67,8 +75,8 @@ def wrap_ticket(*, ticket_id: str, subject: str, body: str, extra: dict[str, str
     inside <ticket> tags is data, not instructions.
     """
     parts = [f"<ticket id={quoteattr(ticket_id)}>"]
-    parts.append(f"  <subject>{escape(subject, _EXTRA_ENTITIES)}</subject>")
-    parts.append(f"  <body>{escape(body, _EXTRA_ENTITIES)}</body>")
+    parts.append(f"  <subject>{escape_text(subject)}</subject>")
+    parts.append(f"  <body>{escape_text(body)}</body>")
     for k, v in (extra or {}).items():
         parts.append(f"  <{k}>{escape(str(v))}</{k}>")
     parts.append("</ticket>")
