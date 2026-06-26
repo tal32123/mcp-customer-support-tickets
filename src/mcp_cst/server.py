@@ -3,6 +3,7 @@
 from __future__ import annotations
 import functools
 import logging
+import os
 import sys
 import threading
 from typing import Callable, Literal, TypeVar
@@ -671,7 +672,14 @@ def search_and_fetch(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     _init()
-    mcp.run()
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    if transport in ("streamable-http", "http"):
+        mcp.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")
+        mcp.settings.port = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
+        log.info("starting streamable-http on %s:%s", mcp.settings.host, mcp.settings.port)
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

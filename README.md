@@ -82,6 +82,43 @@ uv run pytest                          # tests
 |---|---|---|
 | `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. Defaults to `main`. |
 | `MCP_CST_CACHE_DIR` | no | Override cache dir. Defaults to `platformdirs.user_cache_dir("mcp-customer-support-tickets")`. |
+| `MCP_TRANSPORT` | no | `stdio` (default) or `streamable-http` for remote hosting. |
+| `MCP_HOST` | no | Bind host when `MCP_TRANSPORT=streamable-http`. Defaults to `0.0.0.0`. |
+| `PORT` / `MCP_PORT` | no | Bind port when `MCP_TRANSPORT=streamable-http`. Defaults to `8000`. `PORT` wins (Railway/Fly convention). |
+
+## Docker
+
+The image bakes CPU-only PyTorch **and the embedding model weights** so the
+server is ready to ingest the moment it starts. Mount a volume at `/data` so
+the LanceDB store survives restarts — otherwise every cold start re-embeds the
+~62k-row corpus from scratch.
+
+```sh
+docker build -t mcp-customer-support-tickets .
+docker run --rm -p 8000:8000 -v mcp_data:/data mcp-customer-support-tickets
+# server now listening on http://localhost:8000/mcp
+```
+
+Or with compose (named volume `mcp_data` persists between `up`/`down`):
+
+```sh
+docker compose up --build
+```
+
+First boot on an empty volume: ~60-90 s for the 62k-row embed pass (model is
+already baked in). After that the volume is warm and cold starts are seconds.
+
+## Deploying to Railway
+
+1. `railway init` in this repo, then `railway up` — `railway.json` points the
+   builder at the `Dockerfile`.
+2. In the service settings, attach a **Volume** mounted at `/data` (1 GB is
+   enough; 2 GB gives headroom for HF cache growth).
+3. No env vars are required — the Dockerfile already sets
+   `MCP_TRANSPORT=streamable-http` and `MCP_CST_CACHE_DIR=/data`. Railway
+   injects `PORT` automatically. The HF cache lives inside the image
+   (`/opt/hf-cache`), not the volume.
+4. Point a remote MCP client at `https://<your-app>.up.railway.app/mcp`.
 
 ## First-run notes
 
