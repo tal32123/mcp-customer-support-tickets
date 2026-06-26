@@ -715,7 +715,223 @@ def test_draft_reply_grounding_language_coherence(
 # ---------------------------------------------------------------------------
 
 
-def test_zzz_print_summary() -> None:
+# ---------------------------------------------------------------------------
+# Section 1: Topical / intent queries
+# ---------------------------------------------------------------------------
+
+TOPICAL_SCENARIOS: list[tuple[str, list[str], int]] = [
+    ("how do I reset my password", ["password", "reset", "passwort", "zurücksetzen"], 3),
+    ("I forgot my password", ["password", "passwort", "forgot", "vergess"], 3),
+    ("can't log into my account", ["login", "log in", "anmelde", "konto"], 3),
+    ("login button does nothing", ["login", "button", "anmelde"], 3),
+    ("two-factor authentication not working", ["two-factor", "2fa", "authentication", "code"], 3),
+    ("I want a refund", ["refund", "rückerstattung", "money back", "erstatt"], 3),
+    ("how to cancel my subscription", ["cancel", "subscription", "kündig", "abo"], 3),
+    ("my invoice is wrong", ["invoice", "rechnung", "billing", "charge"], 3),
+    ("charged twice for the same order", ["charge", "double", "twice", "rechnung", "order"], 3),
+    ("where is my package", ["package", "shipping", "delivery", "lieferung", "paket", "versand"], 3),
+    ("delivery is late", ["delivery", "shipping", "late", "lieferung", "verspät"], 3),
+    ("change my email address", ["email", "address", "e-mail", "adresse", "ändern"], 3),
+    ("update billing address", ["billing", "address", "rechnung", "adresse"], 3),
+    ("app keeps crashing on startup", ["crash", "startup", "app", "absturz", "start"], 3),
+    ("error message when uploading", ["error", "upload", "fehler", "hochlad"], 3),
+    ("can't connect to the server", ["connect", "server", "verbind"], 3),
+    ("how do I export my data", ["export", "data", "download", "daten"], 3),
+    ("delete my account", ["delete", "account", "löschen", "konto"], 3),
+    ("warranty claim for my product", ["warranty", "claim", "garantie"], 3),
+    ("payment method declined", ["payment", "declined", "zahlung", "abgelehnt"], 3),
+]
+
+
+def _hit_text(hit: dict) -> str:
+    """Return the lowercase combined text of a hit for keyword matching."""
+    return (hit.get("subject", "") + " " + hit.get("snippet", "")).lower()
+
+
+def _search_hits(
+    store: TicketStore,
+    embedder,
+    query: str,
+    limit: int,
+) -> list[dict]:
+    """Clear cache, run search, return hits."""
+    search_cache.cache_clear()
+    return search_tickets_impl(store, embedder, q=query, limit=limit)["hits"]
+
+
+def test_topical_intent_queries_in_top_3(
+    eval_store: TicketStore,
+    real_embedder: SentenceTransformerEmbedder,
+) -> None:
+    """>=16/20 topical intent queries surface at least one keyword in top-3."""
+    hits_per_scenario: list[bool] = []
+    miss_details: list[str] = []
+
+    for query, keywords, _k in TOPICAL_SCENARIOS:
+        hits = _search_hits(eval_store, real_embedder.embed_queries, query, limit=3)
+        matched = any(
+            any(kw in _hit_text(h) for kw in keywords)
+            for h in hits
+        )
+        hits_per_scenario.append(matched)
+        if not matched:
+            miss_details.append(
+                f"  MISS top-3 | query={query!r} | keywords={keywords} | "
+                f"texts={[_hit_text(h)[:80] for h in hits]}"
+            )
+
+    n_pass = sum(hits_per_scenario)
+    pass_rate = n_pass / len(TOPICAL_SCENARIOS)
+    _summary["topical_intent_top3_pass_rate"] = pass_rate
+
+    assert n_pass >= 16, (
+        f"topical intent top-3: {n_pass}/20 scenarios passed (need >=16).\n"
+        + "\n".join(miss_details)
+    )
+
+
+def test_topical_intent_queries_in_top_10(
+    eval_store: TicketStore,
+    real_embedder: SentenceTransformerEmbedder,
+) -> None:
+    """>=19/20 topical intent queries surface at least one keyword in top-10."""
+    hits_per_scenario: list[bool] = []
+    miss_details: list[str] = []
+
+    for query, keywords, _k in TOPICAL_SCENARIOS:
+        hits = _search_hits(eval_store, real_embedder.embed_queries, query, limit=10)
+        matched = any(
+            any(kw in _hit_text(h) for kw in keywords)
+            for h in hits
+        )
+        hits_per_scenario.append(matched)
+        if not matched:
+            miss_details.append(
+                f"  MISS top-10 | query={query!r} | keywords={keywords} | "
+                f"texts={[_hit_text(h)[:80] for h in hits[:3]]}"
+            )
+
+    n_pass = sum(hits_per_scenario)
+    pass_rate = n_pass / len(TOPICAL_SCENARIOS)
+    _summary["topical_intent_top10_pass_rate"] = pass_rate
+
+    assert n_pass >= 19, (
+        f"topical intent top-10: {n_pass}/20 scenarios passed (need >=19).\n"
+        + "\n".join(miss_details)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 2: Cross-lingual recall
+# ---------------------------------------------------------------------------
+
+CROSS_LINGUAL_SCENARIOS: list[tuple[str, str, list[str]]] = [
+    # (query, target_language, expected_keywords in target hit)
+    ("Passwort zurücksetzen", "en", ["password", "reset", "forgot"]),
+    ("Rechnung falsch", "en", ["invoice", "billing", "wrong", "incorrect"]),
+    ("Anmeldung funktioniert nicht", "en", ["login", "log in", "sign in", "can't"]),
+    ("password reset", "de", ["passwort", "zurücksetzen", "vergessen"]),
+    ("invoice problem", "de", ["rechnung", "problem", "falsch"]),
+    ("login broken", "de", ["anmelde", "anmeldung", "geht nicht", "funktioniert"]),
+]
+
+
+def test_cross_lingual_recall(
+    eval_store: TicketStore,
+    real_embedder: SentenceTransformerEmbedder,
+) -> None:
+    """>=4/6 cross-lingual queries recall a topically-matching target-language
+    hit in top-10. Cross-lingual retrieval is harder; this is a realistic floor
+    for e5-small. If observed rate is <=2/6, the assertion message surfaces
+    this as a genuine finding, not a silently-lowered threshold.
+    """
+    pass_count = 0
+    detail: list[str] = []
+
+    for query, target_lang, keywords in CROSS_LINGUAL_SCENARIOS:
+        hits = _search_hits(eval_store, real_embedder.embed_queries, query, limit=10)
+        target_hits = [h for h in hits if h.get("language") == target_lang]
+        matched = any(
+            any(kw in _hit_text(h) for kw in keywords)
+            for h in target_hits
+        )
+        if matched:
+            pass_count += 1
+        else:
+            detail.append(
+                f"  MISS | query={query!r} target={target_lang} keywords={keywords} | "
+                f"target_hits={len(target_hits)} of {len(hits)} | "
+                f"target_texts={[_hit_text(h)[:80] for h in target_hits[:3]]}"
+            )
+
+    pass_rate = pass_count / len(CROSS_LINGUAL_SCENARIOS)
+    _summary["cross_lingual_pass_rate"] = pass_rate
+
+    assert pass_count >= 4, (
+        f"cross-lingual recall: {pass_count}/6 passed (need >=4).\n"
+        + (
+            f"NOTE: observed pass rate {pass_rate:.0%} is at or below 2/6 — "
+            "this reflects a real cross-lingual weakness in e5-small on this dataset.\n"
+            if pass_count <= 2
+            else ""
+        )
+        + "\n".join(detail)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 3: Hard negatives
+# ---------------------------------------------------------------------------
+
+HARD_NEGATIVE_SCENARIOS: list[tuple[str, list[str], list[str]]] = [
+    # (query, topic_A_keywords (should appear), topic_B_keywords (should NOT dominate top-3))
+    ("password reset", ["password", "reset", "passwort"], ["shipping", "package", "delivery", "lieferung"]),
+    ("invoice billing problem", ["invoice", "billing", "rechnung"], ["password", "login", "passwort", "anmelde"]),
+    ("package not delivered", ["package", "delivery", "shipping", "paket", "lieferung"], ["password", "billing", "invoice", "rechnung"]),
+    ("login error", ["login", "log in", "anmelde"], ["refund", "shipping", "rückerstattung", "lieferung"]),
+    ("refund request", ["refund", "rückerstattung", "money back"], ["password", "login", "passwort", "anmelde"]),
+]
+
+
+def test_hard_negatives_not_in_top_3(
+    eval_store: TicketStore,
+    real_embedder: SentenceTransformerEmbedder,
+) -> None:
+    """Top-3 must not be dominated by pure off-topic hits.
+
+    A hit is "pure topic B" when it contains >=1 topic-B keyword AND zero
+    topic-A keywords. Total contaminations across all scenarios must be <=2.
+    """
+    total_contaminations = 0
+    detail: list[str] = []
+
+    for query, topic_a_kws, topic_b_kws in HARD_NEGATIVE_SCENARIOS:
+        hits = _search_hits(eval_store, real_embedder.embed_queries, query, limit=3)
+        for h in hits:
+            text = _hit_text(h)
+            has_b = any(kw in text for kw in topic_b_kws)
+            has_a = any(kw in text for kw in topic_a_kws)
+            if has_b and not has_a:
+                total_contaminations += 1
+                detail.append(
+                    f"  CONTAMINATION | query={query!r} hit={text[:100]!r} "
+                    f"topic_b_match={[kw for kw in topic_b_kws if kw in text]}"
+                )
+
+    _summary["hard_negative_contamination_count"] = total_contaminations
+
+    assert total_contaminations <= 2, (
+        f"hard negatives: {total_contaminations} pure-off-topic hits in top-3 across "
+        f"all scenarios (limit=2).\n" + "\n".join(detail)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Summary printer (always last — alphabetic sort keeps zzzz at the bottom)
+# ---------------------------------------------------------------------------
+
+
+def test_zzzz_print_summary() -> None:
     """Print observed metric values in a format suitable for copy-paste into
     a write-up. Use pytest -s to see the output.
 
@@ -737,8 +953,16 @@ def test_zzz_print_summary() -> None:
     type_coh = _summary.get("grounding_type_coherence", float("nan"))
     lang_coh = _summary.get("grounding_lang_coherence", float("nan"))
 
+    topical_top3 = _summary.get("topical_intent_top3_pass_rate", float("nan"))
+    topical_top10 = _summary.get("topical_intent_top10_pass_rate", float("nan"))
+    cross_lingual = _summary.get("cross_lingual_pass_rate", float("nan"))
+    contaminations = _summary.get("hard_negative_contamination_count", float("nan"))
+
     def _fmt(v: float) -> str:
         return f"{v:.2f}" if v == v else "n/a"  # NaN check
+
+    def _fmt_n(v: float) -> str:
+        return str(int(v)) if v == v else "n/a"  # NaN check, integer display
 
     print(
         "\n"
@@ -753,5 +977,10 @@ def test_zzz_print_summary() -> None:
         f"Language purity:       de-query={_fmt(de_purity)}  "
         f"en-query={_fmt(en_purity)}\n"
         f"draft_reply grounding: type-coherence={_fmt(type_coh)}  "
-        f"language-coherence={_fmt(lang_coh)}"
+        f"language-coherence={_fmt(lang_coh)}\n"
+        "--- Extended quality (new) ---\n"
+        f"Topical intent queries:  top-3={_fmt(topical_top3)}  top-10={_fmt(topical_top10)}\n"
+        f"Cross-lingual recall:    {_fmt(cross_lingual)} (target-language topical match in top-10)\n"
+        f"Hard negatives:          contaminations={_fmt_n(contaminations)} "
+        "(top-3 pure-off-topic hits across all scenarios)"
     )
