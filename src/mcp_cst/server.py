@@ -466,7 +466,13 @@ def create_ticket(
 )
 @_wrap
 def update_ticket(
-    ticket_id: Annotated[str, Field(description="12-char id of the ticket to update.")],
+    ticket_id: Annotated[
+        str,
+        Field(
+            description="Ticket id (12-char hex for dataset rows or `usr_<uuidv7>` for user-created).",
+            max_length=64,
+        ),
+    ],
     subject: Annotated[
         str | None,
         Field(description="New subject. Omit to keep current.", max_length=256),
@@ -533,7 +539,8 @@ def delete_ticket(
     ticket_id: Annotated[
         str,
         Field(
-            description="12-char id of the ticket to delete. Confirm with the user first — deletion is irreversible."
+            description="Ticket id (12-char hex for dataset rows or `usr_<uuidv7>` for user-created) to delete. Confirm with the user first — deletion is irreversible.",
+            max_length=64,
         ),
     ],
 ) -> dict:
@@ -548,7 +555,8 @@ def draft_reply(
     ticket_id: Annotated[
         str,
         Field(
-            description="12-char id of the ticket to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft."
+            description="Ticket id (12-char hex for dataset rows or `usr_<uuidv7>` for user-created) to reply to. Find via search_tickets or get_ticket first; confirm with the user before approving the draft.",
+            max_length=64,
         ),
     ],
     target_language: Annotated[

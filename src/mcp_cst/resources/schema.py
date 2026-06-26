@@ -20,7 +20,7 @@ def schema_payload() -> dict:
         "columns": [
             {
                 "name": "id",
-                "description": "12-char hex derived as sha1(revision || row_index).",
+                "description": "Either a 12-char hex (sha1(revision||row_index) for HF dataset rows) or a `usr_<32-hex>` UUIDv7 prefix for user-created tickets.",
             },
             {"name": "subject", "description": "Ticket subject line, verbatim."},
             {"name": "body", "description": "Ticket body, verbatim."},
@@ -75,7 +75,7 @@ def schema_writes_payload() -> dict:
     """
     return {
         "writes": [
-            "create_ticket: append one ticket (subject + body required; answer, type, queue, priority, language, version, tags optional). Returns {id}. The id is derived from the next available row_index using the same scheme as ingest. New tickets live in the per-revision cache and survive restarts.",
+            "create_ticket: append one ticket (subject + body required; answer, type, queue, priority, language, version, tags optional). Returns {id}. User-created ticket ids are `usr_<uuidv7-hex>` (36 chars total) — collision-safe across delete-then-create cycles. The dataset-ingest path still produces stable 12-hex ids for the 62k bulk rows. New tickets live in the per-revision cache and survive restarts.",
             "update_ticket: patch one ticket by id; unspecified fields are left alone; `tags` replaces the full list. Re-embeds and re-indexes. Returns {id, updated}. TICKET_NOT_FOUND if id is unknown.",
             "delete_ticket: remove one ticket by id. Returns {id, deleted}. Destructive and irreversible within the running store. TICKET_NOT_FOUND if id is unknown.",
         ],

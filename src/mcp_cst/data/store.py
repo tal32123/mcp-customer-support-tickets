@@ -3,7 +3,9 @@
 from __future__ import annotations
 import hashlib
 import math
+import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -50,7 +52,33 @@ class TicketRecord:
 
 
 def derive_id(revision: str, row_index: int) -> str:
+    """Stable 12-hex id for bulk-ingested HF dataset rows.
+
+    User-created tickets use `_uuid7_hex()` via `add_ticket` instead;
+    see that method's docstring for why.
+    """
     return hashlib.sha1(f"{revision}|{row_index}".encode()).hexdigest()[:12]
+
+
+def _uuid7_hex() -> str:
+    """Hand-rolled UUIDv7 → 32 lowercase hex chars (no hyphens).
+
+    RFC 9562 layout: 48 bits ms timestamp || 4-bit version (7) ||
+    12 bits rand_a || 2-bit variant (10) || 62 bits rand_b.
+    ponytail: no monotonic counter; single-process MCP server with
+    low write rate makes same-ms collisions astronomically unlikely.
+    Add a per-process monotonic last_ms/counter pair if write rate
+    ever exceeds ~1/ms.
+    """
+    ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    rand = os.urandom(10)
+    out = bytearray(16)
+    out[0:6] = ms.to_bytes(6, "big")
+    out[6] = 0x70 | (rand[0] & 0x0F)
+    out[7] = rand[1]
+    out[8] = 0x80 | (rand[2] & 0x3F)
+    out[9:16] = rand[3:10]
+    return out.hex()
 
 
 def _normalize_tags(row: dict) -> list[str]:
@@ -311,11 +339,13 @@ class TicketStore:
         version: str = "",
         tags: list[str] | None = None,
     ) -> str:
-        """Insert a new ticket and return its 12-char hex id.
+        """Insert a new ticket and return its id.
 
-        The id is derived as `derive_id(self.revision, next_row_index)` where
-        next_row_index = self.row_count(). This keeps the id scheme identical
-        to build-time ids and guarantees uniqueness within the store.
+        The id is ``usr_<32-hex>`` where the suffix is a UUIDv7 — time-ordered
+        so user-created tickets sort by creation order, and collision-safe
+        across delete-then-create cycles. The HF bulk-ingest path keeps the
+        older ``derive_id(revision, row_index)[:12]`` scheme so the 62k dataset
+        rows produce identical ids on every rebuild.
 
         The vector is searchable immediately. BM25 visibility lags until the
         next FTS rebuild — see `_bump_dirty` / `flush_fts`.
@@ -324,7 +354,7 @@ class TicketStore:
         text_search_value = _text_search(subject, body, tag_list)
         with self._write_lock:
             next_index = self._table.count_rows()
-            new_id = derive_id(self.revision, next_index)
+            new_id = f"usr_{_uuid7_hex()}"
             vector = embedder([text_search_value])[0].tolist()
             record = {
                 "id": new_id,
@@ -423,12 +453,9 @@ class TicketStore:
         """Remove one ticket by id. Returns True if a row was removed.
 
         Row_indexes are not compacted — gaps are fine because we only use
-        row_index for stable ordering, never as a direct table offset. The
-        next `add_ticket` still derives its id from `row_count()`, which
-        means an id collision is possible if you delete-then-add (the new
-        ticket would re-use the deleted ticket's id slot when row_count
-        happens to match a deleted index). For now we accept this; a
-        forever-growing counter is a follow-up if it becomes a problem.
+        row_index for stable ordering, never as a direct table offset.
+        User-created tickets use UUIDv7 ids so delete-then-add cycles
+        never collide.
         """
         with self._write_lock:
             if self._raw_get(ticket_id) is None:

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <title>MCP server for customer support tickets &mdash; Design</title>
 <style>
-  @page { size: A4; margin: 12mm 14mm 11mm; }
+  @page { size: A4; margin: 10mm 12mm 9mm; }
 
   :root {
     --magenta:   #ED1F77;
@@ -19,7 +19,7 @@
   html, body { margin: 0; padding: 0; background: #fff; color: var(--body); }
 
   body {
-    font: 9.5pt/1.5 "Inter", "Open Sans", "Calibri", system-ui, sans-serif;
+    font: 9pt/1.42 "Inter", "Open Sans", "Calibri", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -28,8 +28,8 @@
   .hero {
     background: var(--lavender);
     border-radius: 10px;
-    padding: 11px 16px 10px;
-    margin-bottom: 8px;
+    padding: 8px 14px 7px;
+    margin-bottom: 6px;
   }
 
   .wordmark {
@@ -41,27 +41,27 @@
   }
 
   h1 {
-    font: 800 22pt/1.1 "Inter", "Open Sans", system-ui, sans-serif;
+    font: 800 19pt/1.1 "Inter", "Open Sans", system-ui, sans-serif;
     letter-spacing: -0.02em;
-    margin: 0 0 6px;
+    margin: 0 0 4px;
     color: var(--ink-blue);
   }
   h1 .dot { color: var(--magenta); }
 
   .lede {
-    font: 400 10.5pt/1.45 "Inter", "Open Sans", system-ui, sans-serif;
+    font: 400 9.5pt/1.4 "Inter", "Open Sans", system-ui, sans-serif;
     color: var(--body);
-    margin: 0 0 10px;
+    margin: 0 0 6px;
     max-width: 95%;
   }
 
   .meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 3px 18px;
-    padding-top: 8px;
+    gap: 2px 16px;
+    padding-top: 5px;
     border-top: 1px solid var(--hairline);
-    font-size: 7.8pt;
+    font-size: 7.4pt;
     color: var(--body);
   }
   .meta .k {
@@ -75,7 +75,7 @@
 
   /* ─── Diagram ─── */
   figure.diagram {
-    margin: 0 0 10px;
+    margin: 0 0 6px;
     padding: 0;
   }
   figure.diagram .frame {
@@ -90,7 +90,7 @@
     width: 100%;
     height: auto;
   }
-  figure.diagram .frame { max-width: 420px; margin: 0 auto; padding: 6px 10px 4px; }
+  figure.diagram .frame { max-width: 360px; margin: 0 auto; padding: 4px 8px 2px; }
   figure.diagram figcaption {
     margin-top: 5px;
     padding-left: 4px;
@@ -111,29 +111,29 @@
     column-gap: 18px;
     margin-top: 4px;
   }
-  section { break-inside: avoid; margin: 0 0 5px; }
+  section { break-inside: avoid; margin: 0 0 3px; }
   .span-2 { grid-column: 1 / -1; }
 
   .sec-head {
     display: flex;
     align-items: baseline;
-    gap: 8px;
-    margin: 0 0 4px;
-    padding-bottom: 3px;
+    gap: 6px;
+    margin: 0 0 3px;
+    padding-bottom: 2px;
     border-bottom: 1.5px solid var(--magenta);
   }
   .sec-num {
-    font: 800 11pt/1 "Inter", "Open Sans", system-ui, sans-serif;
+    font: 800 10pt/1 "Inter", "Open Sans", system-ui, sans-serif;
     color: var(--magenta);
     font-variant-numeric: tabular-nums;
   }
   .sec-title {
-    font: 700 10.5pt/1 "Inter", "Open Sans", system-ui, sans-serif;
+    font: 700 9.5pt/1 "Inter", "Open Sans", system-ui, sans-serif;
     color: var(--ink-blue);
     letter-spacing: -0.01em;
   }
 
-  p { margin: 0 0 4px; color: var(--body); }
+  p { margin: 0 0 3px; color: var(--body); }
   strong { font-weight: 700; color: var(--ink-blue); }
   em { font-style: italic; color: var(--muted); }
 
@@ -146,8 +146,8 @@
   }
 
   footer {
-    margin-top: 8px;
-    padding-top: 7px;
+    margin-top: 5px;
+    padding-top: 4px;
     border-top: 1px solid var(--hairline);
     display: flex;
     justify-content: space-between;
@@ -183,7 +183,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">Design</span></div>
-    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> ids stable across machines, and embeds rows with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single LanceDB table holding rows, BM25, ANN, and vectors, guarded by a write lock and a debounced FTS rebuild. <strong>Serve</strong> exposes nine tools — read-only ones (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>) carry <code>readOnlyHint</code>; write tools (<code>create_ticket</code> with sha256 idempotency cache, <code>update_ticket</code>, <code>delete_ticket</code> with <code>destructiveHint</code>) carry a cross-tool replay warning. Two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>) and one prompt — <code>draft_reply</code>, which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants, weak-grounding hedge); the <em>client's</em> LLM writes the reply.</p>
+    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, derives <code>sha1(revision&Vert;row_index)</code> 12-hex ids stable across machines for bulk rows, and embeds them with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single LanceDB table holding rows, BM25, ANN, and vectors, guarded by a write lock and a debounced FTS rebuild. <strong>Serve</strong> exposes nine tools — read-only ones (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>) carry <code>readOnlyHint</code>; write tools (<code>create_ticket</code> (UUIDv7 ids prefixed <code>usr_</code>, sha256 idempotency cache), <code>update_ticket</code>, <code>delete_ticket</code> with <code>destructiveHint</code>) carry a cross-tool replay warning. Two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>) and one prompt — <code>draft_reply</code>, which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants, weak-grounding hedge); the <em>client's</em> LLM writes the reply.</p>
   </section>
 
   <section>

@@ -1,9 +1,12 @@
+import re
+
 import numpy as np
 import pytest
 from mcp_cst.data.store import TicketStore
 from mcp_cst.errors import ErrorCode, McpCstError
 from mcp_cst.tools import create_ticket as create_ticket_module
 from mcp_cst.tools.create_ticket import create_ticket_impl
+from mcp_cst.tools.delete_ticket import delete_ticket_impl
 
 
 def fake_embed(texts: list[str]) -> np.ndarray:
@@ -35,8 +38,13 @@ def test_create_returns_id(store):
     )
     assert set(out.keys()) == {"id"}
     new_id = out["id"]
-    assert len(new_id) == 12
-    assert all(c in "0123456789abcdef" for c in new_id)
+    # User-created ids are `usr_<uuidv7-hex>` (36 chars total).
+    assert new_id.startswith("usr_")
+    assert len(new_id) == 36
+    hex_part = new_id[4:]
+    assert re.fullmatch(r"[0-9a-f]{32}", hex_part)
+    # UUIDv7 version nibble: 13th hex char of the 32-char hex suffix.
+    assert hex_part[12] == "7"
 
 
 def test_create_then_get_round_trip(store):
@@ -136,3 +144,18 @@ def test_idempotency_cache_cap(store, monkeypatch):
     for i in range(5):
         create_ticket_impl(store, fake_embed, subject=f"s{i}", body=f"b{i}")
     assert len(cache) == 3
+
+
+def test_create_after_delete_does_not_collide(store):
+    """Regression: delete the most-recently-created ticket, then create a new one.
+
+    Before the UUIDv7 switch, ``add_ticket`` derived the id from ``count_rows()``,
+    so deleting the latest row caused the next create to mint the SAME id as
+    the deleted one."""
+    a = create_ticket_impl(store, fake_embed, subject="A", body="body A")
+    b = create_ticket_impl(store, fake_embed, subject="B", body="body B")
+    assert a["id"] != b["id"]
+    delete_ticket_impl(store, b["id"])
+    c = create_ticket_impl(store, fake_embed, subject="C", body="body C")
+    assert c["id"] != b["id"], "delete-then-create still collides!"
+    assert c["id"] != a["id"]

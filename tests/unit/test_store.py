@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pytest
 from mcp_cst.data.store import TicketStore
@@ -87,8 +89,10 @@ def test_add_ticket_round_trip(store):
         type="incident",
         tags=["Display", "Hardware"],
     )
-    assert len(new_id) == 12
-    assert all(c in "0123456789abcdef" for c in new_id)
+    # User-created ids are `usr_<uuidv7-hex>` (36 chars total).
+    assert new_id.startswith("usr_")
+    assert len(new_id) == 36
+    assert re.fullmatch(r"[0-9a-f]{32}", new_id[4:])
     rec = store.get(new_id)
     assert rec is not None
     assert rec.subject == "Fresh subject"
