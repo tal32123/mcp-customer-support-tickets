@@ -24,6 +24,7 @@ DESCRIPTION = make_description(
     ),
     output='Output: JSON {"id": "<12-char hex>", "updated": true} on success. If the id is not found, an error with code TICKET_NOT_FOUND is raised.',
     include_g4=False,
+    cross_tool_replay_warning=True,
 )
 
 

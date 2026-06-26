@@ -1,7 +1,10 @@
 """create_ticket tool — insert a new ticket into the running store."""
 
 from __future__ import annotations
+import hashlib
 import re
+import time
+from collections import OrderedDict
 from typing import Callable
 
 import numpy as np
@@ -15,6 +18,50 @@ from ..safety import looks_like_injection
 _ALLOWED_TYPES = {"question", "incident", "request", "problem"}
 _ALLOWED_PRIORITIES = {"low", "medium", "high", "critical", "info"}
 _VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$|^$")
+
+# #162: in-memory idempotency cache. Same (subject|body|tags|answer) within
+# the window returns the previously-minted id instead of inserting a dup row.
+# ponytail: process-local dict, no schema column, no clock skew handling —
+# upgrade to a persistent idempotency_key column if multi-process or restart
+# survival ever matters.
+_IDEMPOTENCY_WINDOW_S = 5 * 60
+_IDEMPOTENCY_MAX = 256
+_idempotency_cache: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+
+
+def _idempotency_key(
+    *, subject: str, body: str, answer: str, tags: list[str] | None
+) -> str:
+    # strip() so "Foo " and "Foo" dedupe; we already require non-empty
+    # subject/body, so a pure-whitespace value never reaches this path.
+    parts = [
+        subject.strip(),
+        body.strip(),
+        answer.strip(),
+        "|".join(sorted(tags or [])),
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _cache_lookup(key: str, now: float) -> str | None:
+    hit = _idempotency_cache.get(key)
+    if hit is None:
+        return None
+    existing_id, ts = hit
+    if now - ts >= _IDEMPOTENCY_WINDOW_S:
+        # Expired entry; drop it so a follow-up insert is allowed and we don't
+        # leak a slot until the cache fills.
+        _idempotency_cache.pop(key, None)
+        return None
+    _idempotency_cache.move_to_end(key)
+    return existing_id
+
+
+def _cache_record(key: str, new_id: str, now: float) -> None:
+    _idempotency_cache[key] = (new_id, now)
+    _idempotency_cache.move_to_end(key)
+    while len(_idempotency_cache) > _IDEMPOTENCY_MAX:
+        _idempotency_cache.popitem(last=False)
 
 
 def _validate_enums(*, type: str, priority: str, version: str) -> None:
@@ -49,6 +96,7 @@ DESCRIPTION = make_description(
     ),
     output='Output: JSON {"id": "<12-char hex>"}. Use get_ticket or ticket://{id} to read it back.',
     include_g4=False,
+    cross_tool_replay_warning=True,
 )
 
 
@@ -78,6 +126,11 @@ def create_ticket_impl(
             "input contains injection-shaped patterns; refusing",
         )
     _validate_enums(type=type, priority=priority, version=version)
+    key = _idempotency_key(subject=subject, body=body, answer=answer, tags=tags)
+    now = time.monotonic()
+    existing = _cache_lookup(key, now)
+    if existing is not None:
+        return {"id": existing, "duplicate_of": existing, "created": False}
     new_id = store.add_ticket(
         subject=subject,
         body=body,
@@ -90,4 +143,5 @@ def create_ticket_impl(
         version=version,
         tags=tags,
     )
+    _cache_record(key, new_id, now)
     return {"id": new_id}

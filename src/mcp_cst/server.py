@@ -9,6 +9,7 @@ from typing import Callable, Literal, TypeVar
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 from typing_extensions import Annotated, ParamSpec
 
@@ -227,7 +228,10 @@ def _init() -> None:
 # --- server_info ---------------------------------------------------------
 
 
-@mcp.tool(description=server_info_module.DESCRIPTION)
+@mcp.tool(
+    description=server_info_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def server_info() -> dict:
     return server_info_module.server_info_payload(cfg=get_config(), store=get_store())
@@ -244,7 +248,10 @@ def schema_tickets() -> str:
 # --- get_ticket + ticket:// resource -------------------------------------
 
 
-@mcp.tool(description=get_ticket_module.DESCRIPTION)
+@mcp.tool(
+    description=get_ticket_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def get_ticket(id: str) -> dict:
     return get_ticket_module.get_ticket_impl(get_store(), id)
@@ -258,7 +265,10 @@ def ticket(id: str) -> str:
 # --- search_tickets ------------------------------------------------------
 
 
-@mcp.tool(description=search_tickets_module.DESCRIPTION)
+@mcp.tool(
+    description=search_tickets_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def search_tickets(
     q: Annotated[
@@ -327,7 +337,10 @@ def search_tickets(
 # --- aggregate_tickets ---------------------------------------------------
 
 
-@mcp.tool(description=aggregate_tickets_module.DESCRIPTION)
+@mcp.tool(
+    description=aggregate_tickets_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def aggregate_tickets(
     group_by: Annotated[
@@ -374,7 +387,10 @@ def aggregate_tickets(
 # --- create_ticket --------------------------------------------------------
 
 
-@mcp.tool(description=create_ticket_module.DESCRIPTION)
+@mcp.tool(
+    description=create_ticket_module.DESCRIPTION,
+    annotations=ToolAnnotations(idempotentHint=False),
+)
 @_wrap
 def create_ticket(
     subject: Annotated[
@@ -444,7 +460,10 @@ def create_ticket(
 # --- update_ticket --------------------------------------------------------
 
 
-@mcp.tool(description=update_ticket_module.DESCRIPTION)
+@mcp.tool(
+    description=update_ticket_module.DESCRIPTION,
+    annotations=ToolAnnotations(idempotentHint=False),
+)
 @_wrap
 def update_ticket(
     ticket_id: Annotated[str, Field(description="12-char id of the ticket to update.")],
@@ -505,7 +524,10 @@ def update_ticket(
 # --- delete_ticket --------------------------------------------------------
 
 
-@mcp.tool(description=delete_ticket_module.DESCRIPTION)
+@mcp.tool(
+    description=delete_ticket_module.DESCRIPTION,
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False),
+)
 @_wrap
 def delete_ticket(
     ticket_id: Annotated[
@@ -549,7 +571,10 @@ def draft_reply(
 # --- get_tickets (batch) --------------------------------------------------
 
 
-@mcp.tool(description=get_tickets_module.DESCRIPTION)
+@mcp.tool(
+    description=get_tickets_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def get_tickets(
     ids: Annotated[
@@ -569,7 +594,10 @@ def get_tickets(
 # --- search_and_fetch -----------------------------------------------------
 
 
-@mcp.tool(description=search_and_fetch_module.DESCRIPTION)
+@mcp.tool(
+    description=search_and_fetch_module.DESCRIPTION,
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 @_wrap
 def search_and_fetch(
     q: Annotated[

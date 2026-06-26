@@ -20,6 +20,7 @@ DESCRIPTION = make_description(
     ),
     output='Output: JSON {"id": "<12-char hex>", "deleted": true} on success.',
     include_g4=False,
+    cross_tool_replay_warning=True,
 )
 
 

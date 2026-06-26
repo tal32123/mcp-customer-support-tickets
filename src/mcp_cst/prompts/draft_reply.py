@@ -19,6 +19,10 @@ from ..safety import escape_text, looks_like_injection, neutralize_markdown, wra
 
 
 SIMILARITY_THRESHOLD = 0.70
+# #108: below this top-similarity, OR with only a single grounding ticket,
+# we switch to a hedged opener that asks for more info instead of asserting
+# a resolution. 0.80 matches the existing "strong match" rung used elsewhere.
+HEDGE_SIMILARITY_THRESHOLD = 0.80
 MAX_GROUNDING = 5
 GROUNDING_FIELD_MAX = 1024
 PROMPT_MAX_BYTES = 32 * 1024
@@ -174,6 +178,7 @@ def _scaffold(
     queue: str,
     type_: str,
     grounding_ids: list[str],
+    similarity_scores: list[float],
 ) -> str:
     guidance = _TYPE_GUIDANCE.get(
         type_,
@@ -181,18 +186,34 @@ def _scaffold(
     )
     grounding_count = len(grounding_ids)
     grounding_ids_str = ", ".join(grounding_ids)
-    return (
+    top_sim = max(similarity_scores) if similarity_scores else 0.0
+    sims_str = ", ".join(f"{s:.2f}" for s in similarity_scores)
+    hedge = grounding_count <= 1 or top_sim < HEDGE_SIMILARITY_THRESHOLD
+    common_header = (
         "Write a customer-support reply to the target ticket above.\n\n"
         f"Queue: {escape_text(queue)} -- use the vocabulary appropriate to that queue.\n"
         f"Ticket type: {escape_text(type_)} -- {guidance}\n"
-        f"Language: write the reply in {escape_text(target_language)}.\n\n"
-        "Structure:\n"
-        f'  1. Open with: "Based on ticket {target_id}, drawing on {grounding_count} prior similar replies ({grounding_ids_str}): ..."\n'
-        "  2. Acknowledge the customer's situation.\n"
-        "  3. Apply the resolution pattern from the most similar prior ticket(s) above.\n"
-        "  4. Close with a clear next step (link, timeline, follow-up).\n\n"
-        f"{_RULES_BLOCK}"
+        f"Language: write the reply in {escape_text(target_language)}.\n"
+        f"Grounding similarity scores (highest first): {sims_str}.\n\n"
     )
+    if hedge:
+        # #108: low-confidence path. Don't promise a resolution; ask for more info.
+        structure = (
+            "Structure (low-confidence draft):\n"
+            f'  1. Acknowledge that you have limited prior context (only {grounding_count} similar prior ticket(s), best similarity {top_sim:.2f}), explicitly ask for more information before promising a resolution, and avoid stating any resolution pattern as certain.\n'
+            "  2. Acknowledge the customer's situation in their own terms.\n"
+            "  3. Offer the closest prior pattern as a tentative possibility, not a fix.\n"
+            "  4. Close by asking one or two targeted clarifying questions.\n\n"
+        )
+    else:
+        structure = (
+            "Structure:\n"
+            f'  1. Open with: "Based on ticket {target_id}, drawing on {grounding_count} prior similar replies ({grounding_ids_str}): ..."\n'
+            "  2. Acknowledge the customer's situation.\n"
+            "  3. Apply the resolution pattern from the most similar prior ticket(s) above.\n"
+            "  4. Close with a clear next step (link, timeline, follow-up).\n\n"
+        )
+    return f"{common_header}{structure}{_RULES_BLOCK}"
 
 
 def draft_reply_impl(
@@ -244,6 +265,7 @@ def draft_reply_impl(
             queue=target.queue,
             type_=target.type,
             grounding_ids=grounding_ids,
+            similarity_scores=[g.similarity for g in grounding],
         ),
     ]
     prompt = "\n".join(parts)

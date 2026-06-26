@@ -348,7 +348,7 @@
 
 <header class="top">
   <h1>MCP Customer Support Tickets — Review · iteration 4</h1>
-  <div class="sub">119 items resolved across four iterations (47 arch + 24 simplification + 48 iter-4 bug-fix-and-feature sweep, all verified by the 167-test unit suite). Iteration 4 covers: data-layer FTS throttle / ANN index / write lock, retrieval tag predicate pushdown, safety/prompt hardening (multilingual injection, language-match grounding, body cap, markdown neutralization, prompt invariants), server error envelope + lazy embedder, CPU-default torch, Python 3.11 floor, and three new agent UX features (#200 cursor pagination, #201 batch get_tickets, #202 search_and_fetch). What remains: 3 reverted-tooling items + 26 guardrail proposals (rate limits, audit log, soft delete, taxonomy, drift detector, etc.) + 40 feature ideas. Filter by category & effort with the pills below.</div>
+  <div class="sub">129 items resolved across four iterations + a Round 1 polish pass (47 arch + 24 simplification + 48 iter-4 sweep + 5 stale removals + 5 Round 1 polish, all verified by the 197-test unit suite). Round 1 added: MCP tool annotations (#219), create_ticket idempotency cache (#162), cross-tool replay warnings on write tools (#106), draft_reply hedge branch for weak grounding (#108). What remains is intentional scope: 3 reverted-tooling items + 17 feature-shaped guardrail proposals (rate limits, audit log, soft delete, taxonomy, etc.) + 39 feature ideas — all deferred as out of scope for the home assignment. Filter by category & effort with the pills below.</div>
   <div class="controls">
     <input type="text" id="search" placeholder="Search title, location, problem, answer, or comment…" />
     <select id="bandFilter">
@@ -539,8 +539,8 @@
     if (resolved && !q && !band && !statusF) {
       html += `
         <div class="resolved-banner">
-          <h3>✓ ${resolved} items resolved across four iterations</h3>
-          <p>Iteration 4 closed out every prior Q&amp;A finding (#1, #2, #4, #7, #12, #13, #19, #25), the iter-2/3 untouched backlog (#26, #38, #39, #40, #41, #42, #47, #50), the iter-4 review batch (#300–#314, #318–#321), ten LLM-safety/data-quality guardrails (#100, #103, #104, #109, #110, #111, #112, #113, #164, #170), and three agent UX features (#200 cursor pagination, #201 batch get_tickets, #202 search_and_fetch). All 167 unit tests pass deterministically. The items below are what's still open.</p>
+          <h3>✓ ${resolved} items resolved — backlog converged for this assignment</h3>
+          <p>Iteration 4 closed out every prior Q&amp;A finding (#1, #2, #4, #7, #12, #13, #19, #25), the iter-2/3 untouched backlog (#26, #38, #39, #40, #41, #42, #47, #50), the iter-4 review batch (#300–#314, #318–#321), ten LLM-safety/data-quality guardrails (#100, #103, #104, #109, #110, #111, #112, #113, #164, #170), and three agent UX features (#200 cursor pagination, #201 batch get_tickets, #202 search_and_fetch). A Round 1 polish pass then shipped MCP tool annotations (#219), create_ticket idempotency (#162), cross-tool replay warnings on write tools (#106), draft_reply hedge branch (#108), and removed five stale findings (#141 / #142 / #148 / #149 / #165). 197 unit tests pass deterministically. The items below are intentionally deferred as out of scope for the home assignment.</p>
         </div>
       `;
     }

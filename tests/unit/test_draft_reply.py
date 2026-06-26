@@ -429,6 +429,78 @@ def test_select_grounding_language_filter_prefers_same():
     assert [g.id for g in out] == ["de1"]
 
 
+# ---------------------------------------------------------------------------
+# #108: low-confidence hedge branch
+# ---------------------------------------------------------------------------
+
+
+def _hedge_phrase_in(prompt: str) -> bool:
+    """Phrases unique to the hedged scaffold."""
+    return (
+        "limited prior context" in prompt
+        and "ask for more information" in prompt
+    )
+
+
+def test_hedge_when_single_grounding(store, monkeypatch):
+    """len(grounding) == 1 -> hedge regardless of similarity."""
+    monkeypatch.setattr(
+        "mcp_cst.prompts.draft_reply.select_grounding",
+        lambda *a, **kw: [
+            Grounding(id="solo00000001", subject="s", body="b", answer="a", similarity=0.99)
+        ],
+    )
+    first_id = store.all_ids()[0]
+    out = draft_reply_impl(store, embed, ticket_id=first_id, target_language="en")
+    assert _hedge_phrase_in(out["prompt"])
+    assert "Based on ticket" not in out["prompt"]
+
+
+def test_hedge_when_top_similarity_below_0_80(store, monkeypatch):
+    """max(similarity) < 0.80 -> hedge even with multiple grounding tickets."""
+    monkeypatch.setattr(
+        "mcp_cst.prompts.draft_reply.select_grounding",
+        lambda *a, **kw: [
+            Grounding(id="aaaaaaaaaa11", subject="s", body="b", answer="a", similarity=0.79),
+            Grounding(id="aaaaaaaaaa22", subject="s", body="b", answer="a", similarity=0.75),
+        ],
+    )
+    first_id = store.all_ids()[0]
+    out = draft_reply_impl(store, embed, ticket_id=first_id, target_language="en")
+    assert _hedge_phrase_in(out["prompt"])
+    assert "Based on ticket" not in out["prompt"]
+
+
+def test_no_hedge_for_strong_grounding(store, monkeypatch):
+    """>=2 grounding AND top similarity >= 0.80 -> normal scaffold, no hedge."""
+    monkeypatch.setattr(
+        "mcp_cst.prompts.draft_reply.select_grounding",
+        lambda *a, **kw: [
+            Grounding(id="aaaaaaaaaa11", subject="s", body="b", answer="a", similarity=0.90),
+            Grounding(id="aaaaaaaaaa22", subject="s", body="b", answer="a", similarity=0.85),
+        ],
+    )
+    first_id = store.all_ids()[0]
+    out = draft_reply_impl(store, embed, ticket_id=first_id, target_language="en")
+    assert not _hedge_phrase_in(out["prompt"])
+    assert "Based on ticket" in out["prompt"]
+
+
+def test_similarity_scores_surfaced_in_prompt(store, monkeypatch):
+    """Scaffold prints the actual similarity numbers so the model sees its confidence."""
+    monkeypatch.setattr(
+        "mcp_cst.prompts.draft_reply.select_grounding",
+        lambda *a, **kw: [
+            Grounding(id="aaaaaaaaaa11", subject="s", body="b", answer="a", similarity=0.91),
+            Grounding(id="aaaaaaaaaa22", subject="s", body="b", answer="a", similarity=0.83),
+        ],
+    )
+    first_id = store.all_ids()[0]
+    out = draft_reply_impl(store, embed, ticket_id=first_id, target_language="en")
+    assert "0.91" in out["prompt"]
+    assert "0.83" in out["prompt"]
+
+
 def test_select_grounding_language_filter_falls_back():
     """#110: if no same-language match, fall back rather than refuse."""
     from mcp_cst.prompts import draft_reply as dr

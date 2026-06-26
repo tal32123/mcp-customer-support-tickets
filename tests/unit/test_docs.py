@@ -1,4 +1,4 @@
-from mcp_cst.docs import G4_REMINDER, make_description
+from mcp_cst.docs import CROSS_TOOL_REPLAY_WARNING, G4_REMINDER, make_description
 
 
 def test_g4_reminder_text():
@@ -31,3 +31,26 @@ def test_make_description_no_g4():
         include_g4=False,
     )
     assert G4_REMINDER not in desc
+
+
+def test_cross_tool_replay_warning_opt_in():
+    desc = make_description(
+        summary="x",
+        use_for="x",
+        not_for="x",
+        output="x",
+        include_g4=False,
+        cross_tool_replay_warning=True,
+    )
+    assert CROSS_TOOL_REPLAY_WARNING in desc
+
+
+def test_cross_tool_replay_warning_default_off():
+    desc = make_description(
+        summary="x",
+        use_for="x",
+        not_for="x",
+        output="x",
+        include_g4=False,
+    )
+    assert CROSS_TOOL_REPLAY_WARNING not in desc
