@@ -38,6 +38,7 @@ def _to_dict(rec) -> dict:
     )
     return {
         "id": rec.id,
+        "original_system_id": rec.original_system_id,
         "subject": rec.subject,
         "body": rec.body,
         "answer": rec.answer,

@@ -9,7 +9,7 @@ from ..safety import wrap_ticket
 
 
 DESCRIPTION = make_description(
-    summary="Verbatim content of one ticket, addressed by id (12-char hex for HF dataset rows or `usr_<uuidv7>` for user-created tickets).",
+    summary="Verbatim content of one ticket, addressed by a 32-char UUIDv7 hex id. HF dataset rows additionally carry a deterministic `original_system_id` for cross-reference.",
     use_for="Use this for: attaching a specific ticket to the chat as a citation, referencing a ticket whose id you already know.",
     not_for="Do NOT use this for: searching or aggregation — those have dedicated tools.",
     output="Output: the ticket wrapped in <ticket> tags with subject, body, and key metadata as child elements.",

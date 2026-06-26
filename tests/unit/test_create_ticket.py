@@ -38,13 +38,11 @@ def test_create_returns_id(store):
     )
     assert set(out.keys()) == {"id"}
     new_id = out["id"]
-    # User-created ids are `usr_<uuidv7-hex>` (36 chars total).
-    assert new_id.startswith("usr_")
-    assert len(new_id) == 36
-    hex_part = new_id[4:]
-    assert re.fullmatch(r"[0-9a-f]{32}", hex_part)
-    # UUIDv7 version nibble: 13th hex char of the 32-char hex suffix.
-    assert hex_part[12] == "7"
+    # All ids are 32-char UUIDv7 hex.
+    assert len(new_id) == 32
+    assert re.fullmatch(r"[0-9a-f]{32}", new_id)
+    # UUIDv7 version nibble lives at hex index 12.
+    assert new_id[12] == "7"
 
 
 def test_create_then_get_round_trip(store):

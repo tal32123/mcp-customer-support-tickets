@@ -17,6 +17,9 @@ import pyarrow as pa
 
 TABLE_NAME = "tickets"
 REVISION_FILE = "revision.txt"
+SCHEMA_VERSION_FILE = "schema_version.txt"
+# Bump when the on-disk schema changes so `is_valid` forces a clean rebuild.
+SCHEMA_VERSION = "v2-uuidv7"
 
 _TAG_COLS = [f"tag_{i}" for i in range(1, 7)]
 
@@ -49,13 +52,14 @@ class TicketRecord:
     tag_5: str
     tag_6: str
     tags: list[str]
+    original_system_id: str = ""
 
 
 def derive_id(revision: str, row_index: int) -> str:
-    """Stable 12-hex id for bulk-ingested HF dataset rows.
-
-    User-created tickets use `_uuid7_hex()` via `add_ticket` instead;
-    see that method's docstring for why.
+    """Deterministic 12-hex id for HF dataset rows. Stored in the
+    `original_system_id` column at ingest — never used as the primary
+    `id` (which is always a UUIDv7). Preserved so tests, fixtures, and
+    cross-references that knew the old id scheme still resolve.
     """
     return hashlib.sha1(f"{revision}|{row_index}".encode()).hexdigest()[:12]
 
@@ -105,6 +109,7 @@ def _schema(embedding_dim: int) -> pa.Schema:
     return pa.schema(
         [
             pa.field("id", pa.string()),
+            pa.field("original_system_id", pa.string()),
             pa.field("row_index", pa.int32()),
             pa.field("subject", pa.string()),
             pa.field("body", pa.string()),
@@ -176,7 +181,8 @@ class TicketStore:
             texts_to_embed.append(text)
             records.append(
                 {
-                    "id": derive_id(revision, i),
+                    "id": _uuid7_hex(),
+                    "original_system_id": derive_id(revision, i),
                     "row_index": i,
                     **coerced,
                     "tags": tags,
@@ -215,6 +221,7 @@ class TicketStore:
         # Sidecar marker — used by `is_valid` to distinguish a complete
         # store from a directory left behind by a crashed ingest.
         (path / REVISION_FILE).write_text(revision, encoding="utf-8")
+        (path / SCHEMA_VERSION_FILE).write_text(SCHEMA_VERSION, encoding="utf-8")
         return cls(db, table, path, revision)
 
     @classmethod
@@ -240,6 +247,17 @@ class TicketStore:
         except OSError:
             return False
         if stored != revision:
+            return False
+        # Schema-version check — forces a clean rebuild after id-scheme or
+        # column-set changes (e.g. the move to UUIDv7 + original_system_id).
+        schema_sidecar = path / SCHEMA_VERSION_FILE
+        if not schema_sidecar.exists():
+            return False
+        try:
+            stored_schema = schema_sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if stored_schema != SCHEMA_VERSION:
             return False
         try:
             db = lancedb.connect(str(path))
@@ -294,6 +312,7 @@ class TicketStore:
             tag_5=r["tag_5"],
             tag_6=r["tag_6"],
             tags=list(r["tags"]),
+            original_system_id=r.get("original_system_id", "") or "",
         )
 
     @property
@@ -341,11 +360,12 @@ class TicketStore:
     ) -> str:
         """Insert a new ticket and return its id.
 
-        The id is ``usr_<32-hex>`` where the suffix is a UUIDv7 — time-ordered
-        so user-created tickets sort by creation order, and collision-safe
-        across delete-then-create cycles. The HF bulk-ingest path keeps the
-        older ``derive_id(revision, row_index)[:12]`` scheme so the 62k dataset
-        rows produce identical ids on every rebuild.
+        The id is a 32-char UUIDv7 hex — time-ordered so user-created
+        tickets sort by creation order, and collision-safe across
+        delete-then-create cycles. The HF bulk-ingest path also mints
+        UUIDv7 primary ids but additionally records the deterministic
+        ``sha1(revision||row_index)[:12]`` in the ``original_system_id``
+        column. User-created tickets leave ``original_system_id`` blank.
 
         The vector is searchable immediately. BM25 visibility lags until the
         next FTS rebuild — see `_bump_dirty` / `flush_fts`.
@@ -354,10 +374,11 @@ class TicketStore:
         text_search_value = _text_search(subject, body, tag_list)
         with self._write_lock:
             next_index = self._table.count_rows()
-            new_id = f"usr_{_uuid7_hex()}"
+            new_id = _uuid7_hex()
             vector = embedder([text_search_value])[0].tolist()
             record = {
                 "id": new_id,
+                "original_system_id": "",
                 "row_index": next_index,
                 "subject": subject,
                 "body": body,
@@ -422,6 +443,10 @@ class TicketStore:
 
             record = {
                 "id": ticket_id,
+                # Preserve provenance — original_system_id is immutable once
+                # set (bulk rows keep their deterministic legacy id; user
+                # rows stay blank).
+                "original_system_id": existing.get("original_system_id", "") or "",
                 # Preserve the original row_index across the delete+insert cycle —
                 # the id is stable but row_index is what we use for stable
                 # ordering in `all_ids`.

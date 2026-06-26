@@ -83,7 +83,7 @@ def _validate_enums(*, type: str, priority: str, version: str) -> None:
 
 
 DESCRIPTION = make_description(
-    summary="Insert a new ticket into the running store and return its `usr_<uuidv7>` id (36 chars).",
+    summary="Insert a new ticket into the running store and return its 32-char UUIDv7 hex id.",
     use_for=(
         "Use this for: 'add a ticket about X', 'log this as a new ticket', "
         "registering one-off tickets the client wants to make searchable. "
@@ -94,7 +94,7 @@ DESCRIPTION = make_description(
         "(call once per ticket), generating ticket text from a prompt (no LLM is wired "
         "up on the server), or backfilling timestamps (the dataset has no time column)."
     ),
-    output='Output: JSON {"id": "usr_<32-hex-uuidv7>"}. Use get_ticket or ticket://{id} to read it back.',
+    output='Output: JSON {"id": "<32-hex-uuidv7>"}. Use get_ticket or ticket://{id} to read it back.',
     include_g4=False,
     cross_tool_replay_warning=True,
 )

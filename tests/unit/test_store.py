@@ -30,19 +30,36 @@ def test_row_count(store, raw_ticket_rows):
     assert store.row_count() == len(raw_ticket_rows)
 
 
-def test_ids_are_stable(store, raw_ticket_rows):
+def test_ids_are_uuidv7_hex(store, raw_ticket_rows):
+    """Primary ids are bare 32-hex UUIDv7. Per-ingest random — no longer
+    deterministic across rebuilds; provenance now lives in
+    `original_system_id` (covered by test_original_system_id_populated)."""
     ids = store.all_ids()
     assert len(ids) == len(raw_ticket_rows)
     assert len(set(ids)) == len(ids)  # unique
-    assert all(len(i) == 12 for i in ids)
-    # rebuild with same inputs → same ids
-    store2 = TicketStore.create(
-        path=store.path.parent / "store2",
-        revision="testrev",
-        rows=raw_ticket_rows,
-        embedder=fake_embed,
-    )
-    assert store.all_ids() == store2.all_ids()
+    for i in ids:
+        assert len(i) == 32
+        assert re.fullmatch(r"[0-9a-f]{32}", i)
+        assert i[12] == "7"  # UUIDv7 version nibble
+
+
+def test_original_system_id_populated(store, raw_ticket_rows):
+    """Bulk HF rows carry deterministic `original_system_id`. User-created
+    rows leave it blank."""
+    from mcp_cst.data.store import derive_id
+
+    ids = store.all_ids()
+    # Bulk row: original_system_id matches the deterministic legacy scheme.
+    rec0 = store.get(ids[0])
+    assert rec0.original_system_id != ""
+    assert len(rec0.original_system_id) == 12
+    # `all_ids` is sorted by row_index, so ids[0] is row 0.
+    assert rec0.original_system_id == derive_id("testrev", 0)
+
+    # User-created row: original_system_id is empty.
+    new_id = store.add_ticket(subject="user", body="row", embedder=fake_embed)
+    new_rec = store.get(new_id)
+    assert new_rec.original_system_id == ""
 
 
 def test_get_ticket_verbatim(store, raw_ticket_rows):
@@ -89,10 +106,10 @@ def test_add_ticket_round_trip(store):
         type="incident",
         tags=["Display", "Hardware"],
     )
-    # User-created ids are `usr_<uuidv7-hex>` (36 chars total).
-    assert new_id.startswith("usr_")
-    assert len(new_id) == 36
-    assert re.fullmatch(r"[0-9a-f]{32}", new_id[4:])
+    # All ids are 32-char UUIDv7 hex (no prefix).
+    assert len(new_id) == 32
+    assert re.fullmatch(r"[0-9a-f]{32}", new_id)
+    assert new_id[12] == "7"
     rec = store.get(new_id)
     assert rec is not None
     assert rec.subject == "Fresh subject"
