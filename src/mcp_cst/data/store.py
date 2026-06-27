@@ -159,12 +159,15 @@ class TicketStore:
         texts_to_embed: list[str] = []
         for i, row in enumerate(rows):
             tags = _normalize_tags(row)
-            # `or ""` (not the dict default) coerces explicit None values
-            # from HF rows — `.get(k, "")` only fires when the key is
-            # missing, so nullable cells would otherwise land as None and
-            # poison both BM25 text and downstream XML escapers.
+            # `or ""` coerces explicit None values from HF rows (the dict
+            # default only fires on missing keys, so nullable cells would
+            # otherwise land as None and poison BM25 + XML escapers).
+            # `str(...)` is also required: LanceDB infers pyarrow types from
+            # the records, not from the schema we pass, so a single numeric
+            # cell (e.g. `version` being `1` in one CSV shard and `""` in
+            # another) poisons inference with int64 and the next "" blows up.
             coerced = {
-                k: (row.get(k) or "")
+                k: str(row.get(k) or "")
                 for k in (
                     "subject",
                     "body",

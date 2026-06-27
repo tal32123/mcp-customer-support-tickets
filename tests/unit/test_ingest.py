@@ -33,3 +33,23 @@ def test_progress_callback_called(tmp_path, raw_ticket_rows):
     )
     assert len(seen) > 0
     assert seen[-1][0] == seen[-1][1]  # finished
+
+
+def test_build_store_tolerates_mixed_type_string_columns(tmp_path):
+    # Regression: the HF dataset ships multiple CSV shards, and one of them
+    # has a numeric `version` cell while others are blank. LanceDB infers
+    # pyarrow types from the records (ignoring the schema we pass), so the
+    # first numeric value pinned the column to int64 and the next "" raised
+    # `ArrowInvalid: Could not convert '' with type str`. Force-stringify in
+    # store._create fixed it; this guards the regression.
+    rows = [
+        {"subject": "a", "body": "b", "version": 1, "language": "en"},
+        {"subject": "c", "body": "d", "version": "", "language": "en"},
+    ]
+    store = build_store_from_rows(
+        rows=rows,
+        path=tmp_path / "store",
+        revision="rev1",
+        embedder=fake_embed,
+    )
+    assert store.row_count() == 2
