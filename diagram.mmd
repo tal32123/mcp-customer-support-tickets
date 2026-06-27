@@ -1,0 +1,42 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+    "fontSize": "15px",
+    "primaryColor": "#ffffff",
+    "primaryTextColor": "#1F1B5C",
+    "primaryBorderColor": "#1F1B5C",
+    "lineColor": "#1F1B5C",
+    "secondaryColor": "#FBFAFE",
+    "tertiaryColor": "#ffffff",
+    "background": "#ffffff",
+    "mainBkg": "#ffffff",
+    "clusterBkg": "#FBFAFE",
+    "clusterBorder": "#1F1B5C"
+  },
+  "flowchart": { "curve": "basis", "htmlLabels": true, "padding": 16, "nodeSpacing": 36, "rankSpacing": 56 }
+}}%%
+flowchart LR
+  C["<b>MCP client</b><br/><span style='color:#6B6B7A;font-size:12px;font-weight:400'>Claude Code · Codex · Claude Desktop</span>"]
+
+  subgraph S["<span style='color:#1F1B5C;font-size:13px;font-weight:600'>MCP server</span>"]
+    direction TB
+    subgraph R[" "]
+      direction LR
+      BM["<b>BM25</b>"]
+      VK["<b>Vector kNN</b>"]
+    end
+    RR(["<b>Reciprocal Rank Fusion</b>"])
+    BM --> RR
+    VK --> RR
+  end
+
+  L[("<b>LanceDB</b>")]
+
+  C <==>|"<span style='color:#6B6B7A;font-size:11px'>stdio · JSON-RPC</span>"| S
+  S <==> L
+
+  classDef accent fill:#ED1F77,stroke:#ED1F77,color:#ffffff,font-weight:600;
+  class RR accent;
+  classDef invisible fill:transparent,stroke:transparent;
+  class R invisible;

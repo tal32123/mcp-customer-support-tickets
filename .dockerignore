@@ -1,0 +1,50 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+
+# Tests (run them in CI, not in the image)
+tests
+
+# Local caches & data
+.cache
+.lancedb
+data
+
+# IDE
+.idea
+.vscode
+
+# Design / docs assets (not needed at runtime)
+*.pdf
+*.html
+*.svg
+*.mmd
+docs
+scripts
+review*.js
+diagram.*
+design*.html
+design*.pdf
+
+# Docker bookkeeping
+Dockerfile
+.dockerignore
+docker-compose*.yml
+railway.json
+
+# OS junk
+.DS_Store
+Thumbs.db

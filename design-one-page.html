@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MCP server for customer support tickets &mdash; Design</title>
+<style>
+  @page { size: A4; margin: 10mm 12mm 9mm; }
+
+  :root {
+    --magenta:   #ED1F77;
+    --ink-blue:  #1F1B5C;
+    --body:      #2C2C3A;
+    --muted:     #6B6B7A;
+    --lavender:  #EFEDF7;
+    --hairline:  #DAD7EC;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: var(--body); }
+
+  body {
+    font: 9pt/1.42 "Inter", "Open Sans", "Calibri", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ─── Hero ─────────────────────────────────────── */
+  .hero {
+    background: var(--lavender);
+    border-radius: 10px;
+    padding: 8px 14px 7px;
+    margin-bottom: 6px;
+  }
+
+  .wordmark {
+    font: 700 8.4pt/1 "Inter", "Open Sans", system-ui, sans-serif;
+    color: var(--magenta);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  h1 {
+    font: 800 19pt/1.1 "Inter", "Open Sans", system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px;
+    color: var(--ink-blue);
+  }
+  h1 .dot { color: var(--magenta); }
+
+  .lede {
+    font: 400 9.5pt/1.4 "Inter", "Open Sans", system-ui, sans-serif;
+    color: var(--body);
+    margin: 0 0 6px;
+    max-width: 95%;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 16px;
+    padding-top: 5px;
+    border-top: 1px solid var(--hairline);
+    font-size: 7.4pt;
+    color: var(--body);
+  }
+  .meta .k {
+    color: var(--magenta);
+    font-weight: 700;
+    font-size: 6.6pt;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-right: 6px;
+  }
+
+  /* ─── Diagram ─── */
+  figure.diagram {
+    margin: 0 0 6px;
+    padding: 0;
+  }
+  figure.diagram .frame {
+    padding: 8px 12px 6px;
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--magenta);
+    border-radius: 6px;
+    background: #fff;
+  }
+  figure.diagram img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  figure.diagram .frame { max-width: 360px; margin: 0 auto; padding: 4px 8px 2px; }
+  figure.diagram figcaption {
+    margin-top: 5px;
+    padding-left: 4px;
+    font-size: 7.8pt;
+    line-height: 1.4;
+    color: var(--muted);
+  }
+  figure.diagram figcaption code {
+    background: transparent;
+    padding: 0;
+    color: var(--ink-blue);
+  }
+
+  /* ─── Body grid ─── */
+  .body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 18px;
+    margin-top: 4px;
+  }
+  section { break-inside: avoid; margin: 0 0 3px; }
+  .span-2 { grid-column: 1 / -1; }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 0 0 3px;
+    padding-bottom: 2px;
+    border-bottom: 1.5px solid var(--magenta);
+  }
+  .sec-num {
+    font: 800 10pt/1 "Inter", "Open Sans", system-ui, sans-serif;
+    color: var(--magenta);
+    font-variant-numeric: tabular-nums;
+  }
+  .sec-title {
+    font: 700 9.5pt/1 "Inter", "Open Sans", system-ui, sans-serif;
+    color: var(--ink-blue);
+    letter-spacing: -0.01em;
+  }
+
+  p { margin: 0 0 3px; color: var(--body); }
+  strong { font-weight: 700; color: var(--ink-blue); }
+  em { font-style: italic; color: var(--muted); }
+
+  code {
+    font: 8.4pt/1.4 "JetBrains Mono", "Consolas", ui-monospace, monospace;
+    color: var(--ink-blue);
+    background: var(--lavender);
+    padding: 0 3px;
+    border-radius: 3px;
+  }
+
+  footer {
+    margin-top: 5px;
+    padding-top: 4px;
+    border-top: 1px solid var(--hairline);
+    display: flex;
+    justify-content: space-between;
+    font-size: 7.4pt;
+    color: var(--muted);
+  }
+  footer .brand { color: var(--magenta); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wordmark">mcp-customer-support-tickets</div>
+  <h1>MCP server for a 62k-ticket support corpus<span class="dot">.</span></h1>
+  <div class="meta">
+    <span><span class="k">Author</span>Tal Charnes</span>
+    <span><span class="k">Stack</span>Python &middot; FastMCP &middot; LanceDB</span>
+    <span><span class="k">Dataset</span>Tobi-Bueck/customer-support-tickets &middot; ~62k &middot; EN+DE</span>
+    <span><span class="k">Transport</span>stdio &middot; local</span>
+  </div>
+</header>
+
+<figure class="diagram">
+  <div class="frame">
+    <img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running BM25 plus vector kNN fused by Reciprocal Rank Fusion, backed by LanceDB" />
+  </div>
+  <figcaption>
+    One Python process. BM25 and vector kNN (IVF_HNSW_SQ on cosine) run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations and an opaque cursor for resumable sweeps. Rows, BM25 index, ANN graph, and dense embeddings live in one LanceDB table.
+  </figcaption>
+</figure>
+
+<div class="body">
+
+  <section>
+    <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">Design</span></div>
+    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, mints a 32-hex UUIDv7 per row as the primary <code>id</code>, and stamps the deterministic <code>sha1(revision&Vert;row_index)[:12]</code> into an <code>original_system_id</code> column for cross-reference; then embeds rows with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single LanceDB table holding rows, BM25, ANN, and vectors, guarded by a write lock and a debounced FTS rebuild. <strong>Serve</strong> exposes nine tools — read-only ones (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>) carry <code>readOnlyHint</code>; write tools (<code>create_ticket</code> with UUIDv7 ids and sha256 idempotency cache, <code>update_ticket</code>, <code>delete_ticket</code> with <code>destructiveHint</code>) carry a cross-tool replay warning. Two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>) and one prompt — <code>draft_reply</code>, which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants, weak-grounding hedge); the <em>client's</em> LLM writes the reply.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">02</span><span class="sec-title">Why this solution</span></div>
+    <p>Hybrid beats either retriever alone &mdash; BM25 catches literal tokens (error codes, SKUs); vectors catch paraphrase; RRF fuses by rank position, so there are no weights to tune. LanceDB co-locates rows, BM25, and vectors in one embedded store that scales to 100M+ on the same API. <strong>Avoided:</strong> cross-encoder rerank (marginal once an LLM re-reads snippets), HyDE / query rewriting, chunking (tickets are already short), remote HTTP + OAuth, and any server-side LLM call &mdash; no API-key dependency, no hallucinated tickets.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">In production</span></div>
+    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. A cross-encoder reranker on by default once retrieval feeds real workflows; a larger multilingual embedding model for richer coverage. PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">04</span><span class="sec-title">Risks</span></div>
+    <p><strong>Hallucinated tickets.</strong> Read endpoints return dataset bytes verbatim; the server never calls an LLM. <strong>Prompt injection via ticket bodies.</strong> Content wrapped in <code>&lt;ticket&gt;</code> tags, a trust-boundary notice precedes every prompt, a multilingual heuristic screens both target and grounding before drafting, markdown is defanged to break clickable-link tricks, and an INTERNAL_ERROR envelope keeps raw tracebacks off the wire. <strong>Dataset drift.</strong> HF revision pinned into every <code>ticket://</code> URI and the embedding cache key; <code>is_valid</code> samples vectors for NaN/Inf before serving; re-index triggers on revision change. <strong>Confident answers from weak matches.</strong> <code>search_tickets</code> returns body snippets so the LLM judges from the text, not the rank; <code>draft_reply</code> refuses to scaffold unless a prior ticket clears cosine &ge; 0.70 with a non-empty answer; unsupported filters fail loud (no timestamp column).</p>
+  </section>
+
+  <section class="span-2">
+    <div class="sec-head"><span class="sec-num">05</span><span class="sec-title">Business impact</span></div>
+    <p>The same code, pointed at your own support corpus, lets reps and CSMs ask plain-English questions inside Claude or Cursor &mdash; <em>"how did we resolve the last few issues about X?"</em> &mdash; and get an answer linked back to the actual tickets. Institutional knowledge stops living only in individual reps' heads. <strong>Swap the corpus and the pipeline doesn't change:</strong> account-review notes, incident write-ups, internal runbooks &mdash; same retrieval, same citation contract. <strong>Because the interface is MCP, one server is reachable from every AI surface</strong> &mdash; Claude Code for engineers, Cursor and Codex for product, any internal agent &mdash; with no per-tool integration work. Build the retrieval surface once; every AI client gets it.</p>
+  </section>
+
+</div>
+
+<footer>
+  <span class="brand">mcp-customer-support-tickets</span>
+  <span>Tal Charnes &middot; 2026</span>
+</footer>
+
+</body>
+</html>
