@@ -181,6 +181,7 @@ class TicketStore:
             max_size=max_size,
             configure=_configure_conn,
             kwargs={"autocommit": False},
+            open=True,
         )
         pool.wait()
         store = cls(pool, schema, revision, embedding_dim)
@@ -227,10 +228,12 @@ class TicketStore:
         schema: str = "public",
         revision: str,
     ) -> bool:
-        """True if the schema holds a complete, non-empty store at ``revision``.
+        """True if the schema has been fully ingested at ``revision``.
 
-        Guards against partial ingest (table exists but no rows), revision
-        drift, schema-version drift, and connection failure.
+        Gated on an ``ingest_complete`` marker — NOT on row count. That way
+        a user who deletes every ticket via ``delete_ticket`` doesn't get
+        the rows resurrected on next boot. Partial ingest crashes don't
+        commit the marker, so they cleanly trigger a rebuild.
         """
         try:
             with psycopg.connect(dsn) as conn:
@@ -242,22 +245,17 @@ class TicketStore:
                           WHERE table_schema = %s AND table_name = %s
                         )
                         """,
-                        (schema, TABLE_NAME),
+                        (schema, META_TABLE_NAME),
                     )
                     if not cur.fetchone()[0]:
-                        return False
-                    cur.execute(
-                        sql.SQL("SELECT count(*) FROM {}").format(
-                            _qual(schema, TABLE_NAME)
-                        )
-                    )
-                    if cur.fetchone()[0] == 0:
                         return False
                     meta = _qual(schema, META_TABLE_NAME)
                     cur.execute(
                         sql.SQL("SELECT key, value FROM {}").format(meta)
                     )
                     kv = dict(cur.fetchall())
+                    if kv.get("ingest_complete") != "true":
+                        return False
                     if kv.get("revision") != revision:
                         return False
                     if kv.get("schema_version") != SCHEMA_VERSION:
@@ -460,6 +458,17 @@ class TicketStore:
                         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
                     ).format(meta=meta),
                     ("revision", self.revision),
+                )
+                # Last write in the transaction — its presence is what
+                # is_valid() gates on. A mid-ingest crash rolls the whole
+                # txn back including this marker, so the next boot sees
+                # ingest_complete absent and rebuilds cleanly.
+                cur.execute(
+                    sql.SQL(
+                        "INSERT INTO {meta} (key, value) VALUES (%s, %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                    ).format(meta=meta),
+                    ("ingest_complete", "true"),
                 )
             conn.commit()
 

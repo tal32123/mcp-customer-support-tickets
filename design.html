@@ -616,10 +616,10 @@ sequenceDiagram
       <div class="diagram">
 <pre class="mermaid">
 flowchart TB
-    Q["Query<br/>(+ filters)"] --> BM25["Postgres FTS<br/>ts_rank_cd over<br/>tsvector (GIN)"]
+    Q["Query<br/>(+ filters)"] --> FTS["Postgres FTS<br/>ts_rank_cd over<br/>tsvector (GIN)"]
     Q --> EMB["Embed query<br/>(e5-small)"]
     EMB --> VEC["pgvector kNN<br/>(HNSW, cosine)"]
-    BM25 -->|"top 50"| RRF["Reciprocal<br/>Rank Fusion"]
+    FTS -->|"top 50"| RRF["Reciprocal<br/>Rank Fusion"]
     VEC -->|"top 50"| RRF
     RRF -->|"top 10"| OUT["Return previews<br/>+ ticket://{id}"]
     OUT -.->|"optional<br/>(deferred)"| RR["Cross-encoder<br/>rerank"]
@@ -762,7 +762,7 @@ flowchart TB
         </tr>
         <tr>
           <td>Confident wrong answers from low-relevance hits</td>
-          <td>BM25/vector can return weak matches; the LLM may still write a confident summary.</td>
+          <td>FTS (<code>ts_rank_cd</code>) or pgvector can return weak matches; the LLM may still write a confident summary.</td>
           <td>Return relevance scores + snippets, not just IDs. <strong>G2</strong>: fail loud on unsupported filters. Eval harness in prod (§12) measures precision@5.</td>
         </tr>
         <tr>

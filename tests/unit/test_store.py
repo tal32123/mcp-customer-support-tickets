@@ -230,6 +230,39 @@ def test_ingest_coerces_null_fields(pg_dsn, pg_schema):
     s.close()
 
 
+def test_is_valid_after_delete_all_stays_true(pg_dsn, pg_schema, raw_ticket_rows):
+    """Regression: a user who deletes every ticket must not have the rows
+    resurrected on next boot. is_valid gates on the ingest_complete marker,
+    not on row count."""
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
+        revision="r",
+        rows=raw_ticket_rows,
+        embedder=fake_embed,
+    )
+    for tid in s.all_ids():
+        s.delete_ticket(tid)
+    assert s.row_count() == 0
+    s.close()
+    assert (
+        TicketStore.is_valid(dsn=pg_dsn, schema=pg_schema, revision="r") is True
+    )
+
+
+def test_is_valid_partial_ingest_returns_false(pg_dsn, pg_schema):
+    """Crash before the ingest_complete marker commits → next boot rebuilds."""
+    # Simulate partial ingest: schema + tables + schema_version row exist,
+    # but no ingest_complete marker.
+    store = TicketStore.connect(
+        dsn=pg_dsn, schema=pg_schema, revision="r"
+    )
+    store.close()
+    assert (
+        TicketStore.is_valid(dsn=pg_dsn, schema=pg_schema, revision="r") is False
+    )
+
+
 def test_null_subject_body_not_poisoning_bm25(pg_dsn, pg_schema):
     """Regression #300: a None subject/body must not write the literal
     string 'None' into the BM25 text — the persisted text_search column

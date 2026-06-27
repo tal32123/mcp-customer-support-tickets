@@ -5,6 +5,7 @@
   },
   "deploy": {
     "startCommand": "mcp-customer-support-tickets",
+    "healthcheckTimeout": 1800,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
