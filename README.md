@@ -88,10 +88,11 @@ uv run pytest                          # tests
 
 ## Docker
 
-The image bakes CPU-only PyTorch **and the embedding model weights** so the
-server is ready to ingest the moment it starts. Mount a volume at `/data` so
-the LanceDB store survives restarts — otherwise every cold start re-embeds the
-~62k-row corpus from scratch.
+The image bakes CPU-only PyTorch, the embedding model weights, **and a
+fully-ingested LanceDB store** at `/opt/store-seed`. On first boot the
+entrypoint copies the seed into `/data` if the volume is empty, so the
+server is ready in seconds — the 62k-row embed pass already ran at build
+time. Mount a volume at `/data` so writes (new tickets) survive restarts.
 
 ```sh
 docker build -t mcp-customer-support-tickets .
@@ -105,8 +106,11 @@ Or with compose (named volume `mcp_data` persists between `up`/`down`):
 docker compose up --build
 ```
 
-First boot on an empty volume: ~60-90 s for the 62k-row embed pass (model is
-already baked in). After that the volume is warm and cold starts are seconds.
+Build time depends on the host: ~3-5 min on Linux/CI, ~30 min on Docker
+Desktop on Windows (the CPU embed pass over 62k rows runs once at build).
+BuildKit caches the ingest layer, so subsequent rebuilds reuse it unless
+ingest code or the dataset revision changes. Runtime first boot on an
+empty volume is a few seconds (seed copy + LanceDB open).
 
 ## Deploying to Railway
 

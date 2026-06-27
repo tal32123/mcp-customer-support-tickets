@@ -40,8 +40,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system app && useradd --system --gid app --home /home/app --create-home app \
-    && mkdir -p /data /opt/hf-cache \
-    && chown -R app:app /data /opt/hf-cache
+    && mkdir -p /data /opt/hf-cache /opt/store-seed \
+    && chown -R app:app /data /opt/hf-cache /opt/store-seed
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
@@ -51,10 +51,23 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')" \
     && chown -R app:app /opt/hf-cache
 
+# Pre-bake the LanceDB store at /opt/store-seed so the first runtime boot
+# is "copy seed → open" (sub-second) instead of "download HF + embed 62k
+# rows" (minutes on Linux, ~30 min on Docker Desktop on Windows). The
+# entrypoint shim copies /opt/store-seed → /data on first boot when the
+# volume is empty. BuildKit caches this layer keyed on the ingest code +
+# dataset revision, so repeat builds reuse it.
+RUN MCP_CST_CACHE_DIR=/opt/store-seed python -c "from mcp_cst.server import _init; _init()" \
+    && chown -R app:app /opt/store-seed
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 USER app
 WORKDIR /home/app
 
 EXPOSE 8000
 VOLUME ["/data"]
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["mcp-customer-support-tickets"]

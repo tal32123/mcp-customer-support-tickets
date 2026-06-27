@@ -11,7 +11,7 @@ from .store import TicketStore
 
 ProgressFn = Callable[[int, int], None]
 
-_BATCH_SIZE = 64
+_BATCH_SIZE = 256
 
 
 def build_store_from_rows(
