@@ -700,8 +700,25 @@ def main() -> None:
     _init()
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     if transport in ("streamable-http", "http"):
+        from mcp.server.transport_security import TransportSecuritySettings
+
         mcp.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")
         mcp.settings.port = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
+        # MCP's built-in DNS-rebinding protection rejects every Host header
+        # not in `allowed_hosts`. Behind a reverse proxy (Railway, Fly,
+        # Cloudflare, …) the proxy already validates the SNI/Host, so we
+        # disable the inner check by default. Set MCP_ALLOWED_HOSTS to
+        # re-enable with an explicit comma-separated allowlist.
+        allowed = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
+        if allowed:
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[h.strip() for h in allowed.split(",") if h.strip()],
+            )
+        else:
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+            )
         log.info("starting streamable-http on %s:%s", mcp.settings.host, mcp.settings.port)
         mcp.run(transport="streamable-http")
     else:
