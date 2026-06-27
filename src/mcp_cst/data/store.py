@@ -1,0 +1,493 @@
+"""LanceDB-backed ticket store: rows + BM25 FTS + vectors."""
+
+from __future__ import annotations
+import hashlib
+import math
+import os
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+import lancedb
+import numpy as np
+import pyarrow as pa
+
+
+TABLE_NAME = "tickets"
+REVISION_FILE = "revision.txt"
+SCHEMA_VERSION_FILE = "schema_version.txt"
+# Bump when the on-disk schema changes so `is_valid` forces a clean rebuild.
+SCHEMA_VERSION = "v2-uuidv7"
+
+_TAG_COLS = [f"tag_{i}" for i in range(1, 7)]
+
+# Rebuild the FTS index after this many mutations. New rows remain searchable
+# in the meantime via LanceDB's flat-scan fallback, so missing a rebuild only
+# costs latency on BM25 hits, never correctness.
+_FTS_REBUILD_THRESHOLD = 50
+
+# LanceDB rejects ANN index creation on tiny tables. Below this row count we
+# skip the index and rely on brute-force vector search (fast enough at this
+# scale).
+_ANN_MIN_ROWS = 256
+
+
+@dataclass(frozen=True)
+class TicketRecord:
+    id: str
+    subject: str
+    body: str
+    answer: str
+    type: str
+    queue: str
+    priority: str
+    language: str
+    version: str
+    tag_1: str
+    tag_2: str
+    tag_3: str
+    tag_4: str
+    tag_5: str
+    tag_6: str
+    tags: list[str]
+    original_system_id: str = ""
+
+
+def derive_id(revision: str, row_index: int) -> str:
+    """Deterministic 12-hex id for HF dataset rows. Stored in the
+    `original_system_id` column at ingest — never used as the primary
+    `id` (which is always a UUIDv7). Preserved so tests, fixtures, and
+    cross-references that knew the old id scheme still resolve.
+    """
+    return hashlib.sha1(f"{revision}|{row_index}".encode()).hexdigest()[:12]
+
+
+def _uuid7_hex() -> str:
+    """Hand-rolled UUIDv7 → 32 lowercase hex chars (no hyphens).
+
+    RFC 9562 layout: 48 bits ms timestamp || 4-bit version (7) ||
+    12 bits rand_a || 2-bit variant (10) || 62 bits rand_b.
+    ponytail: no monotonic counter; single-process MCP server with
+    low write rate makes same-ms collisions astronomically unlikely.
+    Add a per-process monotonic last_ms/counter pair if write rate
+    ever exceeds ~1/ms.
+    """
+    ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    rand = os.urandom(10)
+    out = bytearray(16)
+    out[0:6] = ms.to_bytes(6, "big")
+    out[6] = 0x70 | (rand[0] & 0x0F)
+    out[7] = rand[1]
+    out[8] = 0x80 | (rand[2] & 0x3F)
+    out[9:16] = rand[3:10]
+    return out.hex()
+
+
+def _normalize_tags(row: dict) -> list[str]:
+    return [v for v in (row.get(c, "") for c in _TAG_COLS) if v]
+
+
+def _text_search(subject: str, body: str, tags: list[str]) -> str:
+    return f"{subject}\n{body}\n{' '.join(tags)}"
+
+
+def _tag_cols(tags: list[str]) -> dict[str, str]:
+    padded = (tags + [""] * len(_TAG_COLS))[: len(_TAG_COLS)]
+    return {col: padded[i] for i, col in enumerate(_TAG_COLS)}
+
+
+def _id_where(ticket_id: str) -> str:
+    # Escape single quotes in the id to prevent WHERE-clause injection.
+    # ids are 12-char hex by construction, but the parameter is callable
+    # from outside and must be treated as untrusted.
+    return f"""id = '{ticket_id.replace("'", "''")}'"""
+
+
+def _schema(embedding_dim: int) -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("original_system_id", pa.string()),
+            pa.field("row_index", pa.int32()),
+            pa.field("subject", pa.string()),
+            pa.field("body", pa.string()),
+            pa.field("answer", pa.string()),
+            pa.field("type", pa.string()),
+            pa.field("queue", pa.string()),
+            pa.field("priority", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("version", pa.string()),
+            *(pa.field(c, pa.string()) for c in _TAG_COLS),
+            pa.field("tags", pa.list_(pa.string())),
+            pa.field("text_search", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
+        ]
+    )
+
+
+class TicketStore:
+    """Wraps a LanceDB table with our domain accessors."""
+
+    def __init__(self, db, table, path: Path, revision: str) -> None:
+        self._db = db
+        self._table = table
+        self.path = path
+        self.revision = revision
+        self._write_lock = threading.Lock()
+        self._dirty_writes = 0
+        # Monotonically incremented on every mutation. Read-side caches
+        # (aggregates) key on this so update_ticket (delete+insert, row_count
+        # unchanged) still busts cached results.
+        self._write_seq = 0
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        path: Path,
+        revision: str,
+        rows: list[dict],
+        embedder: Callable[[list[str]], np.ndarray],
+        embedding_dim: int = 384,
+    ) -> "TicketStore":
+        path.mkdir(parents=True, exist_ok=True)
+        db = lancedb.connect(str(path))
+
+        records: list[dict] = []
+        texts_to_embed: list[str] = []
+        for i, row in enumerate(rows):
+            tags = _normalize_tags(row)
+            # `or ""` coerces explicit None values from HF rows (the dict
+            # default only fires on missing keys, so nullable cells would
+            # otherwise land as None and poison BM25 + XML escapers).
+            # `str(...)` is also required: LanceDB infers pyarrow types from
+            # the records, not from the schema we pass, so a single numeric
+            # cell (e.g. `version` being `1` in one CSV shard and `""` in
+            # another) poisons inference with int64 and the next "" blows up.
+            coerced = {
+                k: str(row.get(k) or "")
+                for k in (
+                    "subject",
+                    "body",
+                    "answer",
+                    "type",
+                    "queue",
+                    "priority",
+                    "language",
+                    "version",
+                    *_TAG_COLS,
+                )
+            }
+            text = _text_search(coerced["subject"], coerced["body"], tags)
+            texts_to_embed.append(text)
+            records.append(
+                {
+                    "id": _uuid7_hex(),
+                    "original_system_id": derive_id(revision, i),
+                    "row_index": i,
+                    **coerced,
+                    "tags": tags,
+                    "text_search": text,
+                    "vector": None,  # filled below
+                }
+            )
+
+        vectors = embedder(texts_to_embed)
+        for rec, vec in zip(records, vectors):
+            rec["vector"] = vec.tolist()
+
+        table = db.create_table(
+            TABLE_NAME,
+            data=records,
+            schema=_schema(embedding_dim),
+            mode="overwrite",
+        )
+        # BM25 full-text index over text_search
+        table.create_fts_index("text_search", replace=True)
+        # ANN index for vector search. LanceDB rejects this on tiny tables,
+        # so guard by size and swallow other failures — brute-force search
+        # still works without it.
+        if len(records) >= _ANN_MIN_ROWS:
+            try:
+                table.create_index(
+                    metric="cosine",
+                    num_partitions=int(math.sqrt(len(records))) or 1,
+                    num_sub_vectors=8,
+                    vector_column_name="vector",
+                )
+            except Exception:
+                # ponytail: ANN is an optimization; if the install/version
+                # rejects our params, fall back to brute-force silently.
+                pass
+        # Sidecar marker — used by `is_valid` to distinguish a complete
+        # store from a directory left behind by a crashed ingest.
+        (path / REVISION_FILE).write_text(revision, encoding="utf-8")
+        (path / SCHEMA_VERSION_FILE).write_text(SCHEMA_VERSION, encoding="utf-8")
+        return cls(db, table, path, revision)
+
+    @classmethod
+    def open(cls, *, path: Path, revision: str) -> "TicketStore":
+        db = lancedb.connect(str(path))
+        table = db.open_table(TABLE_NAME)
+        return cls(db, table, path, revision)
+
+    @classmethod
+    def is_valid(cls, path: Path, revision: str) -> bool:
+        """True if `path` holds a complete, non-empty store at `revision`.
+
+        Guards against partial writes (the table directory exists but the
+        sidecar marker hasn't been dropped), revision drift, and corrupt
+        embeddings (NaN/Inf from a crashed embed run). Any of these
+        triggers a rebuild.
+        """
+        sidecar = path / REVISION_FILE
+        if not sidecar.exists():
+            return False
+        try:
+            stored = sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if stored != revision:
+            return False
+        # Schema-version check — forces a clean rebuild after id-scheme or
+        # column-set changes (e.g. the move to UUIDv7 + original_system_id).
+        schema_sidecar = path / SCHEMA_VERSION_FILE
+        if not schema_sidecar.exists():
+            return False
+        try:
+            stored_schema = schema_sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if stored_schema != SCHEMA_VERSION:
+            return False
+        try:
+            db = lancedb.connect(str(path))
+            table = db.open_table(TABLE_NAME)
+            if table.count_rows() <= 0:
+                return False
+            # Sample a handful of vectors — NaN/Inf means a botched embed
+            # run, rebuild rather than serve garbage.
+            # ponytail: finite-only; we don't reject zero-norm because test
+            # fixtures embed to all-zeros. Add `norm > 0.01` here if real
+            # encoders ever start emitting zero vectors in production.
+            sample = (
+                table.search().limit(5).to_arrow().column("vector").to_pylist()
+            )
+            for v in sample:
+                if not np.isfinite(np.asarray(v, dtype=np.float32)).all():
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def row_count(self) -> int:
+        return self._table.count_rows()
+
+    def all_ids(self) -> list[str]:
+        arr = self._table.to_arrow().sort_by("row_index").column("id").to_pylist()
+        return list(arr)
+
+    def _raw_get(self, ticket_id: str) -> dict | None:
+        """Return the raw row dict for `ticket_id`, or None if absent."""
+        rows = self._table.search().where(_id_where(ticket_id)).limit(1).to_list()
+        return rows[0] if rows else None
+
+    def get(self, ticket_id: str) -> TicketRecord | None:
+        r = self._raw_get(ticket_id)
+        if r is None:
+            return None
+        return TicketRecord(
+            id=r["id"],
+            subject=r["subject"],
+            body=r["body"],
+            answer=r["answer"],
+            type=r["type"],
+            queue=r["queue"],
+            priority=r["priority"],
+            language=r["language"],
+            version=r["version"],
+            tag_1=r["tag_1"],
+            tag_2=r["tag_2"],
+            tag_3=r["tag_3"],
+            tag_4=r["tag_4"],
+            tag_5=r["tag_5"],
+            tag_6=r["tag_6"],
+            tags=list(r["tags"]),
+            original_system_id=r.get("original_system_id", "") or "",
+        )
+
+    @property
+    def table(self):
+        """Low-level access for retrieval module."""
+        return self._table
+
+    @property
+    def write_seq(self) -> int:
+        """Monotonic write counter — use as cache key in read-side caches."""
+        return self._write_seq
+
+    def _bump_dirty(self) -> None:
+        """Increment write counters; rebuild FTS once dirty exceeds threshold."""
+        self._dirty_writes += 1
+        self._write_seq += 1
+        if self._dirty_writes >= _FTS_REBUILD_THRESHOLD:
+            self._table.create_fts_index("text_search", replace=True)
+            self._dirty_writes = 0
+
+    def flush_fts(self) -> None:
+        """Force an FTS rebuild if pending writes have accumulated.
+
+        Call on shutdown — also safe to invoke explicitly after a burst of
+        writes if you need immediate BM25 visibility for the new rows.
+        """
+        with self._write_lock:
+            if self._dirty_writes > 0:
+                self._table.create_fts_index("text_search", replace=True)
+                self._dirty_writes = 0
+
+    def add_ticket(
+        self,
+        *,
+        subject: str,
+        body: str,
+        embedder: Callable[[list[str]], np.ndarray],
+        answer: str = "",
+        type: str = "",
+        queue: str = "",
+        priority: str = "",
+        language: str = "",
+        version: str = "",
+        tags: list[str] | None = None,
+    ) -> str:
+        """Insert a new ticket and return its id.
+
+        The id is a 32-char UUIDv7 hex — time-ordered so user-created
+        tickets sort by creation order, and collision-safe across
+        delete-then-create cycles. The HF bulk-ingest path also mints
+        UUIDv7 primary ids but additionally records the deterministic
+        ``sha1(revision||row_index)[:12]`` in the ``original_system_id``
+        column. User-created tickets leave ``original_system_id`` blank.
+
+        The vector is searchable immediately. BM25 visibility lags until the
+        next FTS rebuild — see `_bump_dirty` / `flush_fts`.
+        """
+        tag_list = list(tags or [])
+        text_search_value = _text_search(subject, body, tag_list)
+        with self._write_lock:
+            next_index = self._table.count_rows()
+            new_id = _uuid7_hex()
+            vector = embedder([text_search_value])[0].tolist()
+            record = {
+                "id": new_id,
+                "original_system_id": "",
+                "row_index": next_index,
+                "subject": subject,
+                "body": body,
+                "answer": answer,
+                "type": type,
+                "queue": queue,
+                "priority": priority,
+                "language": language,
+                "version": version,
+                **_tag_cols(tag_list),
+                "tags": tag_list,
+                "text_search": text_search_value,
+                "vector": vector,
+            }
+            self._table.add([record])
+            self._bump_dirty()
+        return new_id
+
+    def update_ticket(
+        self,
+        ticket_id: str,
+        *,
+        embedder: Callable[[list[str]], np.ndarray],
+        subject: str | None = None,
+        body: str | None = None,
+        answer: str | None = None,
+        type: str | None = None,
+        queue: str | None = None,
+        priority: str | None = None,
+        language: str | None = None,
+        version: str | None = None,
+        tags: list[str] | None = None,
+    ) -> bool:
+        """Patch one ticket. `None` for any field means leave it alone.
+
+        Returns True if the ticket existed and was updated, False if no
+        ticket has that id. The implementation deletes-and-reinserts so the
+        text vector and FTS row both reflect the new content; the original
+        `id` and `row_index` are preserved so existing references keep
+        working.
+        """
+        with self._write_lock:
+            existing = self._raw_get(ticket_id)
+            if existing is None:
+                return False
+
+            merged = {
+                "subject": subject if subject is not None else existing["subject"],
+                "body": body if body is not None else existing["body"],
+                "answer": answer if answer is not None else existing["answer"],
+                "type": type if type is not None else existing["type"],
+                "queue": queue if queue is not None else existing["queue"],
+                "priority": priority if priority is not None else existing["priority"],
+                "language": language if language is not None else existing["language"],
+                "version": version if version is not None else existing["version"],
+                "tags": list(tags) if tags is not None else list(existing["tags"]),
+            }
+            text_search_value = _text_search(
+                merged["subject"], merged["body"], merged["tags"]
+            )
+            vector = embedder([text_search_value])[0].tolist()
+
+            record = {
+                "id": ticket_id,
+                # Preserve provenance — original_system_id is immutable once
+                # set (bulk rows keep their deterministic legacy id; user
+                # rows stay blank).
+                "original_system_id": existing.get("original_system_id", "") or "",
+                # Preserve the original row_index across the delete+insert cycle —
+                # the id is stable but row_index is what we use for stable
+                # ordering in `all_ids`.
+                "row_index": existing["row_index"],
+                **{
+                    k: merged[k]
+                    for k in (
+                        "subject",
+                        "body",
+                        "answer",
+                        "type",
+                        "queue",
+                        "priority",
+                        "language",
+                        "version",
+                    )
+                },
+                **_tag_cols(merged["tags"]),
+                "tags": merged["tags"],
+                "text_search": text_search_value,
+                "vector": vector,
+            }
+            self._table.delete(_id_where(ticket_id))
+            self._table.add([record])
+            self._bump_dirty()
+        return True
+
+    def delete_ticket(self, ticket_id: str) -> bool:
+        """Remove one ticket by id. Returns True if a row was removed.
+
+        Row_indexes are not compacted — gaps are fine because we only use
+        row_index for stable ordering, never as a direct table offset.
+        User-created tickets use UUIDv7 ids so delete-then-add cycles
+        never collide.
+        """
+        with self._write_lock:
+            if self._raw_get(ticket_id) is None:
+                return False
+            self._table.delete(_id_where(ticket_id))
+            self._bump_dirty()
+        return True
