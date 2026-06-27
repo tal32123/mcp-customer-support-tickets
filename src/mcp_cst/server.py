@@ -207,22 +207,32 @@ def _init() -> None:
             t.start()
 
     if _STORE is None:
-        if TicketStore.is_valid(cfg.store_path, cfg.dataset_revision):
-            _STORE = TicketStore.open(
-                path=cfg.store_path, revision=cfg.dataset_revision
+        if TicketStore.is_valid(
+            dsn=cfg.database_url,
+            schema=cfg.db_schema,
+            revision=cfg.dataset_revision,
+        ):
+            _STORE = TicketStore.connect(
+                dsn=cfg.database_url,
+                schema=cfg.db_schema,
+                revision=cfg.dataset_revision,
+                embedding_dim=cfg.embedding_dim,
             )
         else:
-            # Cold cache: we need the passage embedder to build the index.
+            # Cold DB: we need the passage embedder to build the index.
             _await_embedder()
             log.info(
-                "Building store at %s — first-run, this takes a few minutes.",
-                cfg.store_path,
+                "Building store in %s schema=%s — first-run, this takes a few minutes.",
+                cfg.database_url.split("@")[-1],
+                cfg.db_schema,
             )
             _STORE = build_store_from_huggingface(
-                path=cfg.store_path,
+                dsn=cfg.database_url,
+                schema=cfg.db_schema,
                 dataset_id=cfg.dataset_id,
                 revision=cfg.dataset_revision,
                 embedder=_EMBED_PASSAGES,
+                embedding_dim=cfg.embedding_dim,
             )
 
 

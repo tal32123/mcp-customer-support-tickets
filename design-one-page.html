@@ -164,7 +164,7 @@
   <h1>MCP server for a 62k-ticket support corpus<span class="dot">.</span></h1>
   <div class="meta">
     <span><span class="k">Author</span>Tal Charnes</span>
-    <span><span class="k">Stack</span>Python &middot; FastMCP &middot; LanceDB</span>
+    <span><span class="k">Stack</span>Python &middot; FastMCP &middot; Postgres + pgvector</span>
     <span><span class="k">Dataset</span>Tobi-Bueck/customer-support-tickets &middot; ~62k &middot; EN+DE</span>
     <span><span class="k">Transport</span>stdio &middot; local</span>
   </div>
@@ -172,10 +172,10 @@
 
 <figure class="diagram">
   <div class="frame">
-    <img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running BM25 plus vector kNN fused by Reciprocal Rank Fusion, backed by LanceDB" />
+    <img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running Postgres FTS plus pgvector kNN fused by Reciprocal Rank Fusion, backed by Postgres + pgvector" />
   </div>
   <figcaption>
-    One Python process. BM25 and vector kNN (IVF_HNSW_SQ on cosine) run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations and an opaque cursor for resumable sweeps. Rows, BM25 index, ANN graph, and dense embeddings live in one LanceDB table.
+    One Python process backed by Postgres. Postgres <code>ts_rank_cd</code> (BM25-ish) and pgvector kNN (HNSW on cosine) run in parallel; <strong style="color:#ED1F77;font-weight:600">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations and an opaque cursor for resumable sweeps. Rows, a <code>tsvector</code> GIN index, an HNSW vector index, and 384-dim embeddings all live in one Postgres table.
   </figcaption>
 </figure>
 
@@ -183,17 +183,17 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">01</span><span class="sec-title">Design</span></div>
-    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, mints a 32-hex UUIDv7 per row as the primary <code>id</code>, and stamps the deterministic <code>sha1(revision&Vert;row_index)[:12]</code> into an <code>original_system_id</code> column for cross-reference; then embeds rows with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single LanceDB table holding rows, BM25, ANN, and vectors, guarded by a write lock and a debounced FTS rebuild. <strong>Serve</strong> exposes nine tools — read-only ones (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>) carry <code>readOnlyHint</code>; write tools (<code>create_ticket</code> with UUIDv7 ids and sha256 idempotency cache, <code>update_ticket</code>, <code>delete_ticket</code> with <code>destructiveHint</code>) carry a cross-tool replay warning. Two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>) and one prompt — <code>draft_reply</code>, which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants, weak-grounding hedge); the <em>client's</em> LLM writes the reply.</p>
+    <p>Three layers in one Python process. <strong>Ingest</strong> pulls the Hugging Face dataset, mints a 32-hex UUIDv7 per row as the primary <code>id</code>, and stamps the deterministic <code>sha1(revision&Vert;row_index)[:12]</code> into an <code>original_system_id</code> column for cross-reference; then embeds rows with a small multilingual sentence-embedding model loaded on-device in a background warm-up thread (stdio handshake never blocks). <strong>Store</strong> is a single Postgres table holding rows, a <code>tsvector</code> GENERATED column with a GIN index, and a <code>vector(384)</code> column with an HNSW cosine index &mdash; pgvector and Postgres FTS in one place. <strong>Serve</strong> exposes nine tools — read-only ones (<code>search_tickets</code> with cursor pagination, <code>get_ticket</code>, <code>get_tickets</code> batch, <code>search_and_fetch</code> composite, <code>aggregate_tickets</code>, <code>server_info</code>) carry <code>readOnlyHint</code>; write tools (<code>create_ticket</code> with UUIDv7 ids and sha256 idempotency cache, <code>update_ticket</code>, <code>delete_ticket</code> with <code>destructiveHint</code>) carry a cross-tool replay warning. Two resources (<code>ticket://{id}</code>, <code>schema://tickets</code>) and one prompt — <code>draft_reply</code>, which assembles the target ticket plus up to five grounding neighbours (multi-language injection screen, body cap, markdown neutralization, target-language matching, prompt-structure invariants, weak-grounding hedge); the <em>client's</em> LLM writes the reply.</p>
   </section>
 
   <section>
     <div class="sec-head"><span class="sec-num">02</span><span class="sec-title">Why this solution</span></div>
-    <p>Hybrid beats either retriever alone &mdash; BM25 catches literal tokens (error codes, SKUs); vectors catch paraphrase; RRF fuses by rank position, so there are no weights to tune. LanceDB co-locates rows, BM25, and vectors in one embedded store that scales to 100M+ on the same API. <strong>Avoided:</strong> cross-encoder rerank (marginal once an LLM re-reads snippets), HyDE / query rewriting, chunking (tickets are already short), remote HTTP + OAuth, and any server-side LLM call &mdash; no API-key dependency, no hallucinated tickets.</p>
+    <p>Hybrid beats either retriever alone &mdash; Postgres FTS (<code>ts_rank_cd</code>) catches literal tokens (error codes, SKUs); pgvector catches paraphrase; RRF fuses by rank position, so there are no weights to tune. Postgres co-locates rows, the <code>tsvector</code> GIN index, and HNSW vector index in one store the team already knows how to run, back up, and observe. Aggregates are plain SQL <code>GROUP BY</code>. <strong>Avoided:</strong> cross-encoder rerank (marginal once an LLM re-reads snippets), HyDE / query rewriting, chunking (tickets are already short), remote HTTP + OAuth, and any server-side LLM call &mdash; no API-key dependency, no hallucinated tickets.</p>
   </section>
 
   <section>
     <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">In production</span></div>
-    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. A cross-encoder reranker on by default once retrieval feeds real workflows; a larger multilingual embedding model for richer coverage. PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts.</p>
+    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. A cross-encoder reranker on by default once retrieval feeds real workflows; a larger multilingual embedding model for richer coverage. PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts. <strong>Next step beyond the current single-Postgres setup:</strong> add <strong>ClickHouse</strong> alongside Postgres for analytical flows in prod &mdash; Postgres stays as OLTP for ticket CRUD and hybrid retrieval, while heavy rollups, time-series, and BI-style aggregates move to ClickHouse where they belong.</p>
   </section>
 
   <section>

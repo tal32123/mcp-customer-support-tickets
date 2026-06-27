@@ -35,13 +35,16 @@ def deterministic_embedder(texts):
 
 
 @pytest.fixture
-def store(tmp_path, raw_ticket_rows):
-    return TicketStore.create(
-        path=tmp_path / "s",
+def store(pg_dsn, pg_schema, raw_ticket_rows):
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=raw_ticket_rows,
         embedder=deterministic_embedder,
     )
+    yield s
+    s.close()
 
 
 def test_hybrid_search_returns_ids(store):
@@ -105,7 +108,7 @@ def test_rrf_single_list_preserves_order():
     assert reciprocal_rank_fusion([["a", "b", "c"], []]) == ["a", "b", "c"]
 
 
-def test_hybrid_search_tag_filter_recall_floor(tmp_path):
+def test_hybrid_search_tag_filter_recall_floor(pg_dsn, pg_schema):
     """Seed N>limit tickets all tagged ['a','b']; with tags=['a','b'] and
     limit=K<N the search must return exactly K hits. Regression guard for
     the old post-filter behavior that silently shrank recall when the
@@ -150,8 +153,9 @@ def test_hybrid_search_tag_filter_recall_floor(tmp_path):
         }
         for i in range(120)
     )
-    store = TicketStore.create(
-        path=tmp_path / "recall",
+    store = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=rows,
         embedder=deterministic_embedder,

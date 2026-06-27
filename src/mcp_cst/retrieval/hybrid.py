@@ -1,9 +1,16 @@
-"""Hybrid BM25 + vector retrieval with Reciprocal Rank Fusion."""
+"""Hybrid BM25 + vector retrieval with Reciprocal Rank Fusion.
+
+BM25-ish branch uses Postgres ts_rank_cd over a STORED tsvector column.
+Vector branch uses pgvector's cosine distance operator (``<=>``) over an
+HNSW index. Filters compile to a single SQL WHERE clause shared by both
+branches so candidate_k applies AFTER filtering, preserving recall.
+"""
 
 from __future__ import annotations
 from typing import Callable, Literal, TypedDict
 
 import numpy as np
+from psycopg import sql
 
 from ..data.store import TicketStore
 from ..errors import ErrorCode, McpCstError
@@ -31,8 +38,6 @@ def build_filters(
     tags: list[str] | None = None,
     tags_mode: Literal["and", "or"] = "and",
 ) -> TicketFilters:
-    """Collect a filters dict, omitting None scalars and dropping tags_mode
-    when tags is empty (it would be meaningless and trip strict validation)."""
     filters: TicketFilters = {}
     if queue is not None:
         filters["queue"] = queue
@@ -57,36 +62,34 @@ def reciprocal_rank_fusion(rank_lists: list[list[str]], k: int = 60) -> list[str
     return sorted(scores, key=scores.get, reverse=True)
 
 
-def _quote_tag(t: str) -> str:
-    # LanceDB SQL: wrap in single quotes, double up embedded single quotes.
-    return "'" + t.replace("'", "''") + "'"
+def _build_where(
+    filters: TicketFilters,
+) -> tuple[sql.Composable | None, tuple]:
+    """Compile a filters dict into (WHERE clause, params).
 
-
-def _build_where(filters: TicketFilters) -> str | None:
-    """Translate filters dict into a LanceDB WHERE clause.
-
-    Scalar filters compile to `col = 'value'`. Tag filters compile to
-    `array_has_all(tags, [...])` for tags_mode='and' (default) and
-    `array_has_any(tags, [...])` for tags_mode='or' — pushed down so
-    candidate_k applies AFTER the tag restriction, preserving recall.
-    Empty tag values are skipped.
+    Scalar filters → ``col = %s``. Tags: ``tags @> %s`` for tags_mode='and',
+    ``tags && %s`` for tags_mode='or'. Pushed down so candidate_k applies
+    AFTER the tag restriction, preserving recall.
     """
-    clauses: list[str] = []
+    clauses: list[sql.Composable] = []
+    params: list = []
     tags: list[str] | None = None
     tags_mode: str = "and"
     for key, value in filters.items():
         if key == "tags":
-            tags = value
+            tags = value  # type: ignore[assignment]
             continue
         if key == "tags_mode":
-            tags_mode = value
+            tags_mode = value  # type: ignore[assignment]
             continue
         if key not in FILTER_FIELDS:
             raise McpCstError(
                 ErrorCode.UNSUPPORTED_FILTER, f"unsupported filter field: {key}"
             )
-        safe = str(value).replace("'", "''")
-        clauses.append(f"{key} = '{safe}'")
+        clauses.append(
+            sql.SQL("{col} = %s").format(col=sql.Identifier(key))
+        )
+        params.append(value)
 
     if tags:
         if tags_mode not in {"and", "or"}:
@@ -94,12 +97,15 @@ def _build_where(filters: TicketFilters) -> str | None:
                 ErrorCode.UNSUPPORTED_FILTER,
                 f"tags_mode must be 'and' or 'or', got {tags_mode!r}",
             )
-        quoted = [_quote_tag(t) for t in tags if t != ""]
-        if quoted:
-            fn = "array_has_all" if tags_mode == "and" else "array_has_any"
-            clauses.append(f"{fn}(tags, [{', '.join(quoted)}])")
+        non_empty = [t for t in tags if t]
+        if non_empty:
+            op = sql.SQL("@>") if tags_mode == "and" else sql.SQL("&&")
+            clauses.append(sql.SQL("tags {op} %s").format(op=op))
+            params.append(non_empty)
 
-    return " AND ".join(clauses) if clauses else None
+    if not clauses:
+        return None, ()
+    return sql.SQL(" AND ").join(clauses), tuple(params)
 
 
 def hybrid_search_full(
@@ -115,21 +121,20 @@ def hybrid_search_full(
     Used by the cursor-paginated search path so we can cache one fusion
     result and slice it across many pages without re-running RRF.
     """
-    where = _build_where(filters)
-
-    # BM25 branch
-    bm25_q = store.table.search(query, query_type="fts").limit(candidate_k)
-    if where:
-        bm25_q = bm25_q.where(where)
-    bm25_ids = [r["id"] for r in bm25_q.to_list()]
-
-    # Vector branch
-    qvec = embedder([query])[0].tolist()
-    vec_q = store.table.search(qvec, query_type="vector").limit(candidate_k)
-    if where:
-        vec_q = vec_q.where(where)
-    vec_ids = [r["id"] for r in vec_q.to_list()]
-
+    where_sql, where_params = _build_where(filters)
+    bm25_ids = store.search_bm25(
+        query=query,
+        where_sql=where_sql,
+        where_params=where_params,
+        limit=candidate_k,
+    )
+    qvec = embedder([query])[0]
+    vec_ids = store.search_vector(
+        qvec=qvec,
+        where_sql=where_sql,
+        where_params=where_params,
+        limit=candidate_k,
+    )
     return reciprocal_rank_fusion([bm25_ids, vec_ids])
 
 
@@ -138,13 +143,11 @@ def hydrate_ids(
 ) -> list[dict]:
     """Look up each id in the store and shape it into the search-result dict.
 
-    `rank_offset` lets paginated callers continue numbering across pages
-    (page 2 starts at rank `page_size + 1`).
+    ``rank_offset`` lets paginated callers continue numbering across pages.
     """
     if not ids:
         return []
-    quoted = ", ".join(_quote_tag(i) for i in ids)
-    rows = store.table.search().where(f"id IN ({quoted})").limit(len(ids)).to_list()
+    rows = store.fetch_for_hydration(ids)
     by_id = {r["id"]: r for r in rows}
     out: list[dict] = []
     for ix, rid in enumerate(ids):
@@ -180,8 +183,7 @@ def hybrid_search(
     limit: int = 10,
     candidate_k: int = 50,
 ) -> list[dict]:
-    """Thin wrapper: fuse, slice to `limit`, hydrate. Kept for callers that
-    don't need pagination (draft_reply, direct lookups)."""
+    """Thin wrapper: fuse, slice to ``limit``, hydrate."""
     fused = hybrid_search_full(
         store,
         query=query,

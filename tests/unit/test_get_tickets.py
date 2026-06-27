@@ -11,13 +11,16 @@ def fake_embed(texts):
 
 
 @pytest.fixture
-def store(tmp_path, raw_ticket_rows):
-    return TicketStore.create(
-        path=tmp_path / "s",
+def store(pg_dsn, pg_schema, raw_ticket_rows):
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=raw_ticket_rows,
         embedder=fake_embed,
     )
+    yield s
+    s.close()
 
 
 def test_returns_in_order_with_full_shape(store):

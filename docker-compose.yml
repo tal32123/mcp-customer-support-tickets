@@ -1,18 +1,36 @@
 services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: mcp-tickets-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tickets
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tickets"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mcp_pgdata:/var/lib/postgresql/data
+
   mcp:
     build: .
     image: mcp-customer-support-tickets:latest
     container_name: mcp-customer-support-tickets
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       PORT: "8000"
-      MCP_CST_CACHE_DIR: /data
-    volumes:
-      - mcp_data:/data
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/tickets
+      MCP_CST_DB_SCHEMA: public
 
 volumes:
-  mcp_data:
+  mcp_pgdata:

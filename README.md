@@ -23,7 +23,7 @@ The one model that runs locally is for **retrieval embeddings**:
 
 | Purpose | Model | Where it runs | How to change it |
 |---|---|---|---|
-| Query + ticket embeddings (384-dim, multilingual EN+DE) | [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) | On-device via `sentence-transformers` (CPU or CUDA if available) | Edit `EMBEDDING_MODEL` in `src/mcp_cst/config.py`. Changing it invalidates the on-disk embedding cache and triggers a fresh ~62k-row embedding pass on next start. |
+| Query + ticket embeddings (384-dim, multilingual EN+DE) | [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) | On-device via `sentence-transformers` (CPU or CUDA if available) | Edit `EMBEDDING_MODEL` in `src/mcp_cst/config.py`. Changing it invalidates the stored embeddings and triggers a fresh ~62k-row embedding pass on next start. |
 
 First run downloads ~120 MB of model weights to the HuggingFace cache; all
 subsequent starts are offline and sub-second.
@@ -68,20 +68,36 @@ Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/
 
 ## Local development
 
+The server needs a Postgres instance with the `pgvector` extension. The
+simplest way is a throwaway container:
+
+```sh
+docker run -d --name mcp-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17
+```
+
+Then:
+
 ```sh
 git clone <repo-url> mcp-customer-support-tickets
 cd mcp-customer-support-tickets
 uv sync
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
 uv run mcp-customer-support-tickets   # stdio server
 uv run pytest                          # tests
 ```
+
+Tests pick up `TEST_DATABASE_URL` if set; otherwise they use
+[`testcontainers[postgres]`](https://testcontainers-python.readthedocs.io/)
+(installed by `uv sync` as a dev dep) to spin a throwaway pgvector
+container, which requires the Docker daemon to be reachable.
 
 ## Environment variables
 
 | Var | Required | Purpose |
 |---|---|---|
 | `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. Defaults to `main`. |
-| `MCP_CST_CACHE_DIR` | no | Override cache dir. Defaults to `platformdirs.user_cache_dir("mcp-customer-support-tickets")`. |
+| `DATABASE_URL` | yes | Postgres DSN (`postgresql://user:pass@host:5432/db`). The target database must have the `pgvector` extension available; the server runs `CREATE EXTENSION IF NOT EXISTS vector` on startup. |
+| `MCP_CST_DB_SCHEMA` | no | Schema to create tables in. Defaults to `public`. |
 | `MCP_TRANSPORT` | no | `stdio` (default) or `streamable-http` for remote hosting. |
 | `MCP_HOST` | no | Bind host when `MCP_TRANSPORT=streamable-http`. Defaults to `0.0.0.0`. |
 | `PORT` / `MCP_PORT` | no | Bind port when `MCP_TRANSPORT=streamable-http`. Defaults to `8000`. `PORT` wins (Railway/Fly convention). |
@@ -89,40 +105,34 @@ uv run pytest                          # tests
 ## Docker
 
 The image is built on the official PyTorch CUDA base and bakes the
-embedding model weights and **a fully-ingested LanceDB store** at
-`/opt/store-seed`. On first boot the entrypoint copies the seed into
-`/data` if the volume is empty, so the server is ready in seconds — the
-62k-row embed pass already ran at build time. Mount a volume at `/data`
-so writes (new tickets) survive restarts.
-
-```sh
-docker build -t mcp-customer-support-tickets .
-docker run --rm -p 8000:8000 -v mcp_data:/data mcp-customer-support-tickets
-# server now listening on http://localhost:8000/mcp
-```
-
-Or with compose (named volume `mcp_data` persists between `up`/`down`):
+embedding model weights. Data lives in Postgres + pgvector, not in the
+image. `docker-compose.yml` wires up two services — `db` (running
+`pgvector/pgvector:pg17`) and `mcp` (this server, `depends_on` the db's
+healthcheck) — and persists the database in a named volume,
+`mcp_pgdata`.
 
 ```sh
 docker compose up --build
+# server now listening on http://localhost:8000/mcp
 ```
+
+On first boot the server waits for Postgres, runs
+`CREATE EXTENSION IF NOT EXISTS vector`, then ingests the ~62k-row HF
+dataset into the configured schema. This takes ~3-5 min on CPU.
+Subsequent boots see a populated `store_meta` row matching the current
+dataset revision and skip straight to serving — sub-second.
 
 On hosts without a GPU (Railway, CI, CPU laptops) torch initialises
 lazily and runs CPU-only — no errors, just slower. On an NVIDIA host with
-the NVIDIA Container Toolkit installed, pass `--gpus all` to actually use
-the GPU:
+the NVIDIA Container Toolkit installed, add a `deploy.resources` GPU
+reservation to the `mcp` service in `docker-compose.yml` (or run the
+image directly with `--gpus all` and `DATABASE_URL` pointed at a
+reachable pgvector instance).
 
-```sh
-docker run --rm --gpus all -p 8000:8000 -v mcp_data:/data mcp-customer-support-tickets
-```
-
-Build time depends on the host: ~3-5 min on Linux/CI, ~3 min on a GPU
-builder, ~30 min on Docker Desktop on Windows without GPU passthrough
-(the embed pass over 62k rows runs once at build). BuildKit caches the
-ingest layer, so subsequent rebuilds reuse it unless ingest code or the
-dataset revision changes. Runtime first boot on an empty volume is a few
-seconds (seed copy + LanceDB open). Final image is ~5-6 GB (CUDA torch +
-cuDNN ship as part of the base).
+Image build is ~3-5 min on Linux/CI and ~3 min on a GPU builder; the
+slow Windows/Docker-Desktop step is gone now that ingest happens at boot
+instead of at build. Final image is ~5-6 GB (CUDA torch + cuDNN ship as
+part of the base).
 
 ## Deploying to Railway
 
@@ -139,22 +149,30 @@ builder.
 2. The ghcr package must be **public** for Railway to pull anonymously on
    the Hobby plan (Repo → Packages → set visibility → Public). Private
    pulls require Railway Pro.
-3. In the service settings, attach a **Volume** mounted at `/data` (1 GB
-   is enough; 2 GB gives headroom for HF cache growth).
-4. No env vars are required — the image already sets
-   `MCP_TRANSPORT=streamable-http` and `MCP_CST_CACHE_DIR=/data`. Railway
-   injects `PORT` automatically. The HF cache lives inside the image
-   (`/opt/hf-cache`), not the volume.
+3. Add a Postgres plugin to the project. **Caveat:** Railway's default
+   Postgres plugin (`bitnami/postgresql`) does not ship `pgvector`. Use
+   Railway's `pgvector`-tagged Postgres template, or roll your own
+   service from `pgvector/pgvector:pg17`. The server runs
+   `CREATE EXTENSION IF NOT EXISTS vector` on boot and will fail fast if
+   the extension is unavailable.
+4. The Postgres plugin exposes `DATABASE_URL` to the service
+   automatically; no other env vars are required. The image already sets
+   `MCP_TRANSPORT=streamable-http`, and Railway injects `PORT`. The HF
+   model cache lives inside the image (`/opt/hf-cache`).
 5. Point a remote MCP client at `https://<your-app>.up.railway.app/mcp`.
 
 ## First-run notes
 
 The first time the server starts, it downloads the embedding model
-(~120 MB) and the HF Parquet, then runs an embedding pass over ~62k
-tickets (~2 min on CPU). Everything is cached on disk, keyed by
-dataset revision and model id. Subsequent starts are sub-second.
+(~120 MB), pulls the HF Parquet, then embeds and inserts ~62k tickets
+into Postgres (~3-5 min on CPU). State is keyed by dataset revision and
+model id in the `store_meta` table. Subsequent starts see the matching
+revision row and serve immediately.
 
-New tickets created via `create_ticket` (and edits via `update_ticket` / `delete_ticket`) are written into the same per-revision cache directory and persist across restarts. Bumping `MCP_CST_DATASET_REVISION` invalidates the cache and triggers a fresh ingest — any locally-created tickets in the old cache are not migrated.
+New tickets created via `create_ticket` (and edits via `update_ticket` /
+`delete_ticket`) are written to the same tables and persist across
+restarts. Bumping `MCP_CST_DATASET_REVISION` triggers a fresh ingest —
+locally-created tickets from the prior revision are not migrated.
 
 ## RAG eval results
 

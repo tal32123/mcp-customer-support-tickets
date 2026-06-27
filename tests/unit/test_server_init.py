@@ -77,10 +77,13 @@ def test_passage_and_query_prefixes_differ(reset_globals):
     assert query_inputs == ["query: login broken"]
 
 
-def test_init_is_idempotent(reset_globals, tmp_path, monkeypatch):
+def test_init_is_idempotent(reset_globals, pg_dsn, monkeypatch):
     """M1: calling _init() repeatedly is safe and does no extra work
     beyond the first call."""
-    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path / "nonexistent"))
+    import uuid
+
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    monkeypatch.setenv("MCP_CST_DB_SCHEMA", f"test_{uuid.uuid4().hex[:12]}")
 
     fake_model = MagicMock()
     fake_model.encode.return_value = np.zeros((1, 384), dtype=np.float32)
@@ -105,14 +108,15 @@ def test_init_is_idempotent(reset_globals, tmp_path, monkeypatch):
 
 
 def test_init_opens_existing_store_without_rebuild(
-    reset_globals, tmp_path, monkeypatch, raw_ticket_rows
+    reset_globals, pg_dsn, pg_schema, monkeypatch, raw_ticket_rows
 ):
-    """H1: when a valid store exists at cfg.store_path, _init() must open it
-    rather than re-download and rebuild from HuggingFace. This is the
-    production restart hot-path."""
+    """H1: when a valid store already exists for the configured DSN+schema,
+    _init() must open it rather than re-download and rebuild from
+    HuggingFace. This is the production restart hot-path."""
     from mcp_cst.data.store import TicketStore
 
-    monkeypatch.setenv("MCP_CST_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    monkeypatch.setenv("MCP_CST_DB_SCHEMA", pg_schema)
 
     fake_model = MagicMock()
     fake_model.encode.return_value = np.zeros((1, 384), dtype=np.float32)
@@ -120,10 +124,11 @@ def test_init_opens_existing_store_without_rebuild(
     def fixture_embedder(texts):
         return np.zeros((len(texts), 384), dtype=np.float32)
 
-    # Pre-build a valid store at the exact path Config.from_env will compute.
+    # Pre-build a valid store so the meta marker passes is_valid().
     cfg = server.Config.from_env()
-    TicketStore.create(
-        path=cfg.store_path,
+    TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision=cfg.dataset_revision,
         rows=raw_ticket_rows[:10],
         embedder=fixture_embedder,

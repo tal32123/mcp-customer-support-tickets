@@ -1,7 +1,6 @@
-"""Build the LanceDB store from Hugging Face Parquet or in-memory rows."""
+"""Build the Postgres store from Hugging Face Parquet or in-memory rows."""
 
 from __future__ import annotations
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -17,50 +16,53 @@ _BATCH_SIZE = 256
 def build_store_from_rows(
     *,
     rows: list[dict],
-    path: Path,
+    dsn: str,
+    schema: str,
     revision: str,
     embedder: Callable[[list[str]], np.ndarray],
+    embedding_dim: int = 384,
     on_progress: ProgressFn | None = None,
     batch_size: int = _BATCH_SIZE,
 ) -> TicketStore:
     """Build a fresh store from a list of dict rows.
 
-    The embedder is called in batches so progress can be reported.
+    Wraps the embedder so we can fire ``on_progress`` per batch without
+    pushing that concern into the store layer.
     """
     total = len(rows)
     done = [0]
 
-    def batched(texts: list[str]) -> np.ndarray:
-        chunks: list[np.ndarray] = []
-        for i in range(0, len(texts), batch_size):
-            chunk = embedder(texts[i : i + batch_size])
-            chunks.append(chunk)
-            done[0] += chunk.shape[0]
-            if on_progress is not None:
-                on_progress(done[0], total)
-        return np.vstack(chunks) if chunks else np.zeros((0, 384), dtype=np.float32)
+    def progress_embedder(texts: list[str]) -> np.ndarray:
+        vec = embedder(texts)
+        done[0] += len(texts)
+        if on_progress is not None:
+            on_progress(done[0], total)
+        return vec
 
-    return TicketStore.create(
-        path=path,
+    return TicketStore.create_with_rows(
+        dsn=dsn,
+        schema=schema,
         revision=revision,
         rows=rows,
-        embedder=batched,
+        embedder=progress_embedder,
+        embedding_dim=embedding_dim,
     )
 
 
 def build_store_from_huggingface(
     *,
-    path: Path,
+    dsn: str,
+    schema: str,
     dataset_id: str,
     revision: str,
     embedder: Callable[[list[str]], np.ndarray],
+    embedding_dim: int = 384,
     on_progress: ProgressFn | None = None,
     batch_size: int = _BATCH_SIZE,
 ) -> TicketStore:
-    """Download the HF dataset at `revision` and build the store.
+    """Download the HF dataset at ``revision`` and build the store.
 
-    Not unit-tested here; verified manually during integration. Used at
-    server startup if no cached store exists.
+    Used at server startup if no cached store exists.
     """
     from datasets import load_dataset  # local import: heavy
 
@@ -68,9 +70,11 @@ def build_store_from_huggingface(
     rows = [dict(r) for r in ds]
     return build_store_from_rows(
         rows=rows,
-        path=path,
+        dsn=dsn,
+        schema=schema,
         revision=revision,
         embedder=embedder,
+        embedding_dim=embedding_dim,
         on_progress=on_progress,
         batch_size=batch_size,
     )

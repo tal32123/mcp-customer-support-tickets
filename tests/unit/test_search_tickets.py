@@ -24,13 +24,16 @@ def _clear_cache():
 
 
 @pytest.fixture
-def store(tmp_path, raw_ticket_rows):
-    return TicketStore.create(
-        path=tmp_path / "s",
+def store(pg_dsn, pg_schema, raw_ticket_rows):
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=raw_ticket_rows,
         embedder=embed,
     )
+    yield s
+    s.close()
 
 
 def test_returns_previews(store):
@@ -139,10 +142,9 @@ def test_ttl_expiry_invalidates_cursor(store, monkeypatch):
         pytest.skip("not enough results to paginate")
     # Jump time forward past the TTL.
     real_time = search_cache.time.time
+    skewed = real_time() + search_cache._SEARCH_CACHE_TTL_S + 1
     monkeypatch.setattr(
-        search_cache.time,
-        "time",
-        lambda: real_time() + search_cache._SEARCH_CACHE_TTL_S + 1,
+        search_cache.time, "time", lambda: skewed,
     )
     with pytest.raises(McpCstError) as exc:
         search_tickets_impl(

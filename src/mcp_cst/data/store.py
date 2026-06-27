@@ -1,37 +1,27 @@
-"""LanceDB-backed ticket store: rows + BM25 FTS + vectors."""
+"""Postgres + pgvector backed ticket store: rows + tsvector FTS + vectors."""
 
 from __future__ import annotations
 import hashlib
-import math
 import os
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-import lancedb
 import numpy as np
-import pyarrow as pa
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
 
 
 TABLE_NAME = "tickets"
-REVISION_FILE = "revision.txt"
-SCHEMA_VERSION_FILE = "schema_version.txt"
+META_TABLE_NAME = "store_meta"
 # Bump when the on-disk schema changes so `is_valid` forces a clean rebuild.
-SCHEMA_VERSION = "v2-uuidv7"
+SCHEMA_VERSION = "v3-postgres"
 
 _TAG_COLS = [f"tag_{i}" for i in range(1, 7)]
-
-# Rebuild the FTS index after this many mutations. New rows remain searchable
-# in the meantime via LanceDB's flat-scan fallback, so missing a rebuild only
-# costs latency on BM25 hits, never correctness.
-_FTS_REBUILD_THRESHOLD = 50
-
-# LanceDB rejects ANN index creation on tiny tables. Below this row count we
-# skip the index and rely on brute-force vector search (fast enough at this
-# scale).
-_ANN_MIN_ROWS = 256
 
 
 @dataclass(frozen=True)
@@ -56,10 +46,10 @@ class TicketRecord:
 
 
 def derive_id(revision: str, row_index: int) -> str:
-    """Deterministic 12-hex id for HF dataset rows. Stored in the
-    `original_system_id` column at ingest — never used as the primary
-    `id` (which is always a UUIDv7). Preserved so tests, fixtures, and
-    cross-references that knew the old id scheme still resolve.
+    """Deterministic 12-hex id for HF dataset rows. Stored in
+    ``original_system_id`` at ingest — never used as the primary ``id``
+    (always a UUIDv7). Preserved so tests, fixtures, and cross-references
+    that knew the old id scheme still resolve.
     """
     return hashlib.sha1(f"{revision}|{row_index}".encode()).hexdigest()[:12]
 
@@ -67,12 +57,8 @@ def derive_id(revision: str, row_index: int) -> str:
 def _uuid7_hex() -> str:
     """Hand-rolled UUIDv7 → 32 lowercase hex chars (no hyphens).
 
-    RFC 9562 layout: 48 bits ms timestamp || 4-bit version (7) ||
-    12 bits rand_a || 2-bit variant (10) || 62 bits rand_b.
-    ponytail: no monotonic counter; single-process MCP server with
-    low write rate makes same-ms collisions astronomically unlikely.
-    Add a per-process monotonic last_ms/counter pair if write rate
-    ever exceeds ~1/ms.
+    ponytail: no monotonic counter; same-ms collisions astronomically
+    unlikely at single-process MCP server write rates.
     """
     ms = int(time.time() * 1000) & ((1 << 48) - 1)
     rand = os.urandom(10)
@@ -98,254 +84,451 @@ def _tag_cols(tags: list[str]) -> dict[str, str]:
     return {col: padded[i] for i, col in enumerate(_TAG_COLS)}
 
 
-def _id_where(ticket_id: str) -> str:
-    # Escape single quotes in the id to prevent WHERE-clause injection.
-    # ids are 12-char hex by construction, but the parameter is callable
-    # from outside and must be treated as untrusted.
-    return f"""id = '{ticket_id.replace("'", "''")}'"""
+def _qual(schema: str, table: str) -> sql.Composed:
+    return sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
 
 
-def _schema(embedding_dim: int) -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("id", pa.string()),
-            pa.field("original_system_id", pa.string()),
-            pa.field("row_index", pa.int32()),
-            pa.field("subject", pa.string()),
-            pa.field("body", pa.string()),
-            pa.field("answer", pa.string()),
-            pa.field("type", pa.string()),
-            pa.field("queue", pa.string()),
-            pa.field("priority", pa.string()),
-            pa.field("language", pa.string()),
-            pa.field("version", pa.string()),
-            *(pa.field(c, pa.string()) for c in _TAG_COLS),
-            pa.field("tags", pa.list_(pa.string())),
-            pa.field("text_search", pa.string()),
-            pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
-        ]
+def _configure_conn(conn: psycopg.Connection) -> None:
+    register_vector(conn)
+
+
+_ALL_COLS = (
+    "id",
+    "original_system_id",
+    "row_index",
+    "subject",
+    "body",
+    "answer",
+    "type",
+    "queue",
+    "priority",
+    "language",
+    "version",
+    *_TAG_COLS,
+    "tags",
+)
+
+
+def _record_from_row(r: dict) -> TicketRecord:
+    return TicketRecord(
+        id=r["id"],
+        subject=r["subject"] or "",
+        body=r["body"] or "",
+        answer=r["answer"] or "",
+        type=r["type"] or "",
+        queue=r["queue"] or "",
+        priority=r["priority"] or "",
+        language=r["language"] or "",
+        version=r["version"] or "",
+        tag_1=r["tag_1"] or "",
+        tag_2=r["tag_2"] or "",
+        tag_3=r["tag_3"] or "",
+        tag_4=r["tag_4"] or "",
+        tag_5=r["tag_5"] or "",
+        tag_6=r["tag_6"] or "",
+        tags=list(r["tags"] or []),
+        original_system_id=r.get("original_system_id") or "",
     )
 
 
 class TicketStore:
-    """Wraps a LanceDB table with our domain accessors."""
+    """Wraps a Postgres schema holding the tickets table + indexes.
 
-    def __init__(self, db, table, path: Path, revision: str) -> None:
-        self._db = db
-        self._table = table
-        self.path = path
+    Public surface mirrors the previous LanceDB-backed store so tools and
+    retrieval modules stay unchanged.
+    """
+
+    def __init__(
+        self, pool: ConnectionPool, schema: str, revision: str, embedding_dim: int
+    ) -> None:
+        self._pool = pool
+        self._schema = schema
         self.revision = revision
+        self.embedding_dim = embedding_dim
         self._write_lock = threading.Lock()
-        self._dirty_writes = 0
         # Monotonically incremented on every mutation. Read-side caches
-        # (aggregates) key on this so update_ticket (delete+insert, row_count
-        # unchanged) still busts cached results.
+        # (aggregates) key on this so update_ticket still busts cached results.
         self._write_seq = 0
 
+    # --- lifecycle ----------------------------------------------------------
+
     @classmethod
-    def create(
+    def connect(
         cls,
         *,
-        path: Path,
+        dsn: str,
+        schema: str = "public",
+        revision: str,
+        embedding_dim: int = 384,
+        min_size: int = 1,
+        max_size: int = 4,
+    ) -> "TicketStore":
+        """Open a pool and ensure the schema + tables + indexes exist.
+
+        Idempotent — safe to call on an already-initialised database. Does
+        not insert rows; pair with ``create_with_rows`` for first-boot
+        ingest, or check ``is_valid`` and ingest via ``ingest_rows``.
+        """
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
+            )
+
+        pool = ConnectionPool(
+            conninfo=dsn,
+            min_size=min_size,
+            max_size=max_size,
+            configure=_configure_conn,
+            kwargs={"autocommit": False},
+        )
+        pool.wait()
+        store = cls(pool, schema, revision, embedding_dim)
+        store._ensure_tables()
+        return store
+
+    @classmethod
+    def create_with_rows(
+        cls,
+        *,
+        dsn: str,
+        schema: str = "public",
         revision: str,
         rows: list[dict],
         embedder: Callable[[list[str]], np.ndarray],
         embedding_dim: int = 384,
     ) -> "TicketStore":
-        path.mkdir(parents=True, exist_ok=True)
-        db = lancedb.connect(str(path))
+        """DROP + recreate the schema, then bulk-ingest ``rows``.
 
-        records: list[dict] = []
-        texts_to_embed: list[str] = []
-        for i, row in enumerate(rows):
-            tags = _normalize_tags(row)
-            # `or ""` coerces explicit None values from HF rows (the dict
-            # default only fires on missing keys, so nullable cells would
-            # otherwise land as None and poison BM25 + XML escapers).
-            # `str(...)` is also required: LanceDB infers pyarrow types from
-            # the records, not from the schema we pass, so a single numeric
-            # cell (e.g. `version` being `1` in one CSV shard and `""` in
-            # another) poisons inference with int64 and the next "" blows up.
-            coerced = {
-                k: str(row.get(k) or "")
-                for k in (
-                    "subject",
-                    "body",
-                    "answer",
-                    "type",
-                    "queue",
-                    "priority",
-                    "language",
-                    "version",
-                    *_TAG_COLS,
-                )
-            }
-            text = _text_search(coerced["subject"], coerced["body"], tags)
-            texts_to_embed.append(text)
-            records.append(
-                {
-                    "id": _uuid7_hex(),
-                    "original_system_id": derive_id(revision, i),
-                    "row_index": i,
-                    **coerced,
-                    "tags": tags,
-                    "text_search": text,
-                    "vector": None,  # filled below
-                }
-            )
-
-        vectors = embedder(texts_to_embed)
-        for rec, vec in zip(records, vectors):
-            rec["vector"] = vec.tolist()
-
-        table = db.create_table(
-            TABLE_NAME,
-            data=records,
-            schema=_schema(embedding_dim),
-            mode="overwrite",
-        )
-        # BM25 full-text index over text_search
-        table.create_fts_index("text_search", replace=True)
-        # ANN index for vector search. LanceDB rejects this on tiny tables,
-        # so guard by size and swallow other failures — brute-force search
-        # still works without it.
-        if len(records) >= _ANN_MIN_ROWS:
-            try:
-                table.create_index(
-                    metric="cosine",
-                    num_partitions=int(math.sqrt(len(records))) or 1,
-                    num_sub_vectors=8,
-                    vector_column_name="vector",
-                )
-            except Exception:
-                # ponytail: ANN is an optimization; if the install/version
-                # rejects our params, fall back to brute-force silently.
-                pass
-        # Sidecar marker — used by `is_valid` to distinguish a complete
-        # store from a directory left behind by a crashed ingest.
-        (path / REVISION_FILE).write_text(revision, encoding="utf-8")
-        (path / SCHEMA_VERSION_FILE).write_text(SCHEMA_VERSION, encoding="utf-8")
-        return cls(db, table, path, revision)
-
-    @classmethod
-    def open(cls, *, path: Path, revision: str) -> "TicketStore":
-        db = lancedb.connect(str(path))
-        table = db.open_table(TABLE_NAME)
-        return cls(db, table, path, revision)
-
-    @classmethod
-    def is_valid(cls, path: Path, revision: str) -> bool:
-        """True if `path` holds a complete, non-empty store at `revision`.
-
-        Guards against partial writes (the table directory exists but the
-        sidecar marker hasn't been dropped), revision drift, and corrupt
-        embeddings (NaN/Inf from a crashed embed run). Any of these
-        triggers a rebuild.
+        Destructive — only the named schema is wiped, but every existing
+        row in it is gone. Used by tests and by the first-boot ingest path.
         """
-        sidecar = path / REVISION_FILE
-        if not sidecar.exists():
-            return False
-        try:
-            stored = sidecar.read_text(encoding="utf-8").strip()
-        except OSError:
-            return False
-        if stored != revision:
-            return False
-        # Schema-version check — forces a clean rebuild after id-scheme or
-        # column-set changes (e.g. the move to UUIDv7 + original_system_id).
-        schema_sidecar = path / SCHEMA_VERSION_FILE
-        if not schema_sidecar.exists():
-            return False
-        try:
-            stored_schema = schema_sidecar.read_text(encoding="utf-8").strip()
-        except OSError:
-            return False
-        if stored_schema != SCHEMA_VERSION:
-            return False
-        try:
-            db = lancedb.connect(str(path))
-            table = db.open_table(TABLE_NAME)
-            if table.count_rows() <= 0:
-                return False
-            # Sample a handful of vectors — NaN/Inf means a botched embed
-            # run, rebuild rather than serve garbage.
-            # ponytail: finite-only; we don't reject zero-norm because test
-            # fixtures embed to all-zeros. Add `norm > 0.01` here if real
-            # encoders ever start emitting zero vectors in production.
-            sample = (
-                table.search().limit(5).to_arrow().column("vector").to_pylist()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    sql.Identifier(schema)
+                )
             )
-            for v in sample:
-                if not np.isfinite(np.asarray(v, dtype=np.float32)).all():
-                    return False
+            conn.execute(
+                sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema))
+            )
+        store = cls.connect(
+            dsn=dsn, schema=schema, revision=revision, embedding_dim=embedding_dim
+        )
+        store.ingest_rows(rows, embedder)
+        return store
+
+    @classmethod
+    def is_valid(
+        cls,
+        *,
+        dsn: str,
+        schema: str = "public",
+        revision: str,
+    ) -> bool:
+        """True if the schema holds a complete, non-empty store at ``revision``.
+
+        Guards against partial ingest (table exists but no rows), revision
+        drift, schema-version drift, and connection failure.
+        """
+        try:
+            with psycopg.connect(dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT EXISTS (
+                          SELECT 1 FROM information_schema.tables
+                          WHERE table_schema = %s AND table_name = %s
+                        )
+                        """,
+                        (schema, TABLE_NAME),
+                    )
+                    if not cur.fetchone()[0]:
+                        return False
+                    cur.execute(
+                        sql.SQL("SELECT count(*) FROM {}").format(
+                            _qual(schema, TABLE_NAME)
+                        )
+                    )
+                    if cur.fetchone()[0] == 0:
+                        return False
+                    meta = _qual(schema, META_TABLE_NAME)
+                    cur.execute(
+                        sql.SQL("SELECT key, value FROM {}").format(meta)
+                    )
+                    kv = dict(cur.fetchall())
+                    if kv.get("revision") != revision:
+                        return False
+                    if kv.get("schema_version") != SCHEMA_VERSION:
+                        return False
             return True
         except Exception:
             return False
 
+    def close(self) -> None:
+        self._pool.close()
+
+    # --- schema -------------------------------------------------------------
+
+    def _ensure_tables(self) -> None:
+        # Single transaction: CREATE TABLE + indexes + meta seeding. Safe to
+        # re-run — every statement is IF NOT EXISTS / ON CONFLICT.
+        tickets = _qual(self._schema, TABLE_NAME)
+        meta = _qual(self._schema, META_TABLE_NAME)
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS {tickets} (
+                            id                 TEXT PRIMARY KEY,
+                            original_system_id TEXT NOT NULL DEFAULT '',
+                            row_index          BIGSERIAL NOT NULL,
+                            subject            TEXT NOT NULL DEFAULT '',
+                            body               TEXT NOT NULL DEFAULT '',
+                            answer             TEXT NOT NULL DEFAULT '',
+                            type               TEXT NOT NULL DEFAULT '',
+                            queue              TEXT NOT NULL DEFAULT '',
+                            priority           TEXT NOT NULL DEFAULT '',
+                            language           TEXT NOT NULL DEFAULT '',
+                            version            TEXT NOT NULL DEFAULT '',
+                            tag_1              TEXT NOT NULL DEFAULT '',
+                            tag_2              TEXT NOT NULL DEFAULT '',
+                            tag_3              TEXT NOT NULL DEFAULT '',
+                            tag_4              TEXT NOT NULL DEFAULT '',
+                            tag_5              TEXT NOT NULL DEFAULT '',
+                            tag_6              TEXT NOT NULL DEFAULT '',
+                            tags               TEXT[] NOT NULL DEFAULT '{{}}',
+                            text_search        TEXT NOT NULL DEFAULT '',
+                            tsv                tsvector
+                                               GENERATED ALWAYS AS
+                                               (to_tsvector('simple', text_search))
+                                               STORED,
+                            embedding          vector({dim}) NOT NULL
+                        )
+                        """
+                    ).format(tickets=tickets, dim=sql.Literal(self.embedding_dim))
+                )
+                cur.execute(
+                    sql.SQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS {meta} (
+                            key   TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        )
+                        """
+                    ).format(meta=meta)
+                )
+                # GIN over tsvector for BM25-ish ranked search.
+                cur.execute(
+                    sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} USING gin(tsv)"
+                    ).format(
+                        idx=sql.Identifier(f"{TABLE_NAME}_tsv_gin"), tbl=tickets
+                    )
+                )
+                # GIN over tags for @> / && membership.
+                cur.execute(
+                    sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} USING gin(tags)"
+                    ).format(
+                        idx=sql.Identifier(f"{TABLE_NAME}_tags_gin"), tbl=tickets
+                    )
+                )
+                # Scalar btrees — cheap, help filter+aggregate.
+                for col in ("queue", "priority", "language", "type", "row_index"):
+                    cur.execute(
+                        sql.SQL(
+                            "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} ({col})"
+                        ).format(
+                            idx=sql.Identifier(f"{TABLE_NAME}_{col}_idx"),
+                            tbl=tickets,
+                            col=sql.Identifier(col),
+                        )
+                    )
+                # HNSW ANN over the embedding column. Cheap to maintain at
+                # this scale; the index is built lazily on first SELECT.
+                cur.execute(
+                    sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} "
+                        "USING hnsw (embedding vector_cosine_ops)"
+                    ).format(
+                        idx=sql.Identifier(f"{TABLE_NAME}_embedding_hnsw"),
+                        tbl=tickets,
+                    )
+                )
+                # Seed schema_version once. Revision is updated by ingest.
+                cur.execute(
+                    sql.SQL(
+                        "INSERT INTO {meta} (key, value) VALUES (%s, %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                    ).format(meta=meta),
+                    ("schema_version", SCHEMA_VERSION),
+                )
+            conn.commit()
+
+    # --- ingest -------------------------------------------------------------
+
+    def ingest_rows(
+        self,
+        rows: list[dict],
+        embedder: Callable[[list[str]], np.ndarray],
+        batch_size: int = 256,
+    ) -> None:
+        """Bulk-insert ``rows`` into a freshly-created store.
+
+        Caller is responsible for embedding batching if it needs progress
+        reporting — this method calls ``embedder`` once per ``batch_size``
+        chunk so memory stays bounded on the full corpus.
+        """
+        tickets = _qual(self._schema, TABLE_NAME)
+        meta = _qual(self._schema, META_TABLE_NAME)
+        insert_sql = sql.SQL(
+            """
+            INSERT INTO {tickets} (
+                id, original_system_id, row_index,
+                subject, body, answer, type, queue, priority, language, version,
+                tag_1, tag_2, tag_3, tag_4, tag_5, tag_6,
+                tags, text_search, embedding
+            ) VALUES (
+                %(id)s, %(original_system_id)s, %(row_index)s,
+                %(subject)s, %(body)s, %(answer)s, %(type)s, %(queue)s,
+                %(priority)s, %(language)s, %(version)s,
+                %(tag_1)s, %(tag_2)s, %(tag_3)s, %(tag_4)s, %(tag_5)s, %(tag_6)s,
+                %(tags)s, %(text_search)s, %(embedding)s
+            )
+            """
+        ).format(tickets=tickets)
+
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for batch_start in range(0, len(rows), batch_size):
+                    batch = rows[batch_start : batch_start + batch_size]
+                    payload: list[dict[str, Any]] = []
+                    texts: list[str] = []
+                    for i, row in enumerate(batch):
+                        # `or ""` coerces explicit None values from HF rows;
+                        # `str(...)` defends against numeric cells leaking through.
+                        coerced = {
+                            k: str(row.get(k) or "")
+                            for k in (
+                                "subject",
+                                "body",
+                                "answer",
+                                "type",
+                                "queue",
+                                "priority",
+                                "language",
+                                "version",
+                                *_TAG_COLS,
+                            )
+                        }
+                        tags = _normalize_tags(row)
+                        text = _text_search(coerced["subject"], coerced["body"], tags)
+                        texts.append(text)
+                        payload.append(
+                            {
+                                "id": _uuid7_hex(),
+                                "original_system_id": derive_id(
+                                    self.revision, batch_start + i
+                                ),
+                                "row_index": batch_start + i,
+                                **coerced,
+                                "tags": tags,
+                                "text_search": text,
+                            }
+                        )
+                    vectors = embedder(texts)
+                    for rec, vec in zip(payload, vectors):
+                        rec["embedding"] = np.asarray(vec, dtype=np.float32)
+                    cur.executemany(insert_sql, payload)
+                # Bump the row_index sequence past the explicit values so
+                # subsequent add_ticket() inserts get fresh row_indexes.
+                if rows:
+                    cur.execute(
+                        "SELECT setval(pg_get_serial_sequence(%s, %s), %s, false)",
+                        (
+                            f'"{self._schema}"."{TABLE_NAME}"',
+                            "row_index",
+                            len(rows),
+                        ),
+                    )
+                cur.execute(
+                    sql.SQL(
+                        "INSERT INTO {meta} (key, value) VALUES (%s, %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                    ).format(meta=meta),
+                    ("revision", self.revision),
+                )
+            conn.commit()
+
+    # --- read paths ---------------------------------------------------------
+
     def row_count(self) -> int:
-        return self._table.count_rows()
+        tickets = _qual(self._schema, TABLE_NAME)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql.SQL("SELECT count(*) FROM {}").format(tickets))
+            return int(cur.fetchone()[0])
 
     def all_ids(self) -> list[str]:
-        arr = self._table.to_arrow().sort_by("row_index").column("id").to_pylist()
-        return list(arr)
+        tickets = _qual(self._schema, TABLE_NAME)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT id FROM {} ORDER BY row_index").format(tickets)
+            )
+            return [r[0] for r in cur.fetchall()]
 
     def _raw_get(self, ticket_id: str) -> dict | None:
-        """Return the raw row dict for `ticket_id`, or None if absent."""
-        rows = self._table.search().where(_id_where(ticket_id)).limit(1).to_list()
-        return rows[0] if rows else None
+        tickets = _qual(self._schema, TABLE_NAME)
+        cols = sql.SQL(", ").join(sql.Identifier(c) for c in _ALL_COLS)
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    sql.SQL("SELECT {cols} FROM {tbl} WHERE id = %s").format(
+                        cols=cols, tbl=tickets
+                    ),
+                    (ticket_id,),
+                )
+                return cur.fetchone()
 
     def get(self, ticket_id: str) -> TicketRecord | None:
         r = self._raw_get(ticket_id)
-        if r is None:
-            return None
-        return TicketRecord(
-            id=r["id"],
-            subject=r["subject"],
-            body=r["body"],
-            answer=r["answer"],
-            type=r["type"],
-            queue=r["queue"],
-            priority=r["priority"],
-            language=r["language"],
-            version=r["version"],
-            tag_1=r["tag_1"],
-            tag_2=r["tag_2"],
-            tag_3=r["tag_3"],
-            tag_4=r["tag_4"],
-            tag_5=r["tag_5"],
-            tag_6=r["tag_6"],
-            tags=list(r["tags"]),
-            original_system_id=r.get("original_system_id", "") or "",
-        )
+        return _record_from_row(r) if r else None
+
+    def text_search_of(self, ticket_id: str) -> str | None:
+        """Return the persisted ``text_search`` for ``ticket_id``.
+
+        Debug helper used by tests that need to assert what BM25 actually
+        sees — the regular ``get()`` path strips this column.
+        """
+        tickets = _qual(self._schema, TABLE_NAME)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT text_search FROM {} WHERE id = %s").format(tickets),
+                (ticket_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
 
     @property
-    def table(self):
-        """Low-level access for retrieval module."""
-        return self._table
+    def schema_name(self) -> str:
+        return self._schema
+
+    @property
+    def pool(self) -> ConnectionPool:
+        """Low-level access for retrieval / aggregates modules."""
+        return self._pool
 
     @property
     def write_seq(self) -> int:
         """Monotonic write counter — use as cache key in read-side caches."""
         return self._write_seq
 
-    def _bump_dirty(self) -> None:
-        """Increment write counters; rebuild FTS once dirty exceeds threshold."""
-        self._dirty_writes += 1
+    def _bump_seq(self) -> None:
         self._write_seq += 1
-        if self._dirty_writes >= _FTS_REBUILD_THRESHOLD:
-            self._table.create_fts_index("text_search", replace=True)
-            self._dirty_writes = 0
 
-    def flush_fts(self) -> None:
-        """Force an FTS rebuild if pending writes have accumulated.
-
-        Call on shutdown — also safe to invoke explicitly after a burst of
-        writes if you need immediate BM25 visibility for the new rows.
-        """
-        with self._write_lock:
-            if self._dirty_writes > 0:
-                self._table.create_fts_index("text_search", replace=True)
-                self._dirty_writes = 0
+    # --- write paths --------------------------------------------------------
 
     def add_ticket(
         self,
@@ -361,43 +544,50 @@ class TicketStore:
         version: str = "",
         tags: list[str] | None = None,
     ) -> str:
-        """Insert a new ticket and return its id.
-
-        The id is a 32-char UUIDv7 hex — time-ordered so user-created
-        tickets sort by creation order, and collision-safe across
-        delete-then-create cycles. The HF bulk-ingest path also mints
-        UUIDv7 primary ids but additionally records the deterministic
-        ``sha1(revision||row_index)[:12]`` in the ``original_system_id``
-        column. User-created tickets leave ``original_system_id`` blank.
-
-        The vector is searchable immediately. BM25 visibility lags until the
-        next FTS rebuild — see `_bump_dirty` / `flush_fts`.
-        """
+        """Insert a new ticket and return its UUIDv7 hex id."""
         tag_list = list(tags or [])
-        text_search_value = _text_search(subject, body, tag_list)
+        text = _text_search(subject, body, tag_list)
+        vector = np.asarray(embedder([text])[0], dtype=np.float32)
+        new_id = _uuid7_hex()
+        tickets = _qual(self._schema, TABLE_NAME)
+        cols_payload = {
+            "id": new_id,
+            "original_system_id": "",
+            "subject": subject,
+            "body": body,
+            "answer": answer,
+            "type": type,
+            "queue": queue,
+            "priority": priority,
+            "language": language,
+            "version": version,
+            **_tag_cols(tag_list),
+            "tags": tag_list,
+            "text_search": text,
+            "embedding": vector,
+        }
+        insert_sql = sql.SQL(
+            """
+            INSERT INTO {tickets} (
+                id, original_system_id,
+                subject, body, answer, type, queue, priority, language, version,
+                tag_1, tag_2, tag_3, tag_4, tag_5, tag_6,
+                tags, text_search, embedding
+            ) VALUES (
+                %(id)s, %(original_system_id)s,
+                %(subject)s, %(body)s, %(answer)s, %(type)s, %(queue)s,
+                %(priority)s, %(language)s, %(version)s,
+                %(tag_1)s, %(tag_2)s, %(tag_3)s, %(tag_4)s, %(tag_5)s, %(tag_6)s,
+                %(tags)s, %(text_search)s, %(embedding)s
+            )
+            """
+        ).format(tickets=tickets)
         with self._write_lock:
-            next_index = self._table.count_rows()
-            new_id = _uuid7_hex()
-            vector = embedder([text_search_value])[0].tolist()
-            record = {
-                "id": new_id,
-                "original_system_id": "",
-                "row_index": next_index,
-                "subject": subject,
-                "body": body,
-                "answer": answer,
-                "type": type,
-                "queue": queue,
-                "priority": priority,
-                "language": language,
-                "version": version,
-                **_tag_cols(tag_list),
-                "tags": tag_list,
-                "text_search": text_search_value,
-                "vector": vector,
-            }
-            self._table.add([record])
-            self._bump_dirty()
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(insert_sql, cols_payload)
+                conn.commit()
+            self._bump_seq()
         return new_id
 
     def update_ticket(
@@ -415,79 +605,206 @@ class TicketStore:
         version: str | None = None,
         tags: list[str] | None = None,
     ) -> bool:
-        """Patch one ticket. `None` for any field means leave it alone.
+        """Patch one ticket. ``None`` for any field means leave it alone.
 
         Returns True if the ticket existed and was updated, False if no
-        ticket has that id. The implementation deletes-and-reinserts so the
-        text vector and FTS row both reflect the new content; the original
-        `id` and `row_index` are preserved so existing references keep
-        working.
+        ticket has that id. The text_search column is regenerated whenever
+        subject/body/tags change, so the tsvector (a STORED generated
+        column) and the embedding stay in sync.
         """
         with self._write_lock:
             existing = self._raw_get(ticket_id)
             if existing is None:
                 return False
-
             merged = {
                 "subject": subject if subject is not None else existing["subject"],
                 "body": body if body is not None else existing["body"],
                 "answer": answer if answer is not None else existing["answer"],
                 "type": type if type is not None else existing["type"],
                 "queue": queue if queue is not None else existing["queue"],
-                "priority": priority if priority is not None else existing["priority"],
-                "language": language if language is not None else existing["language"],
+                "priority": priority
+                if priority is not None
+                else existing["priority"],
+                "language": language
+                if language is not None
+                else existing["language"],
                 "version": version if version is not None else existing["version"],
                 "tags": list(tags) if tags is not None else list(existing["tags"]),
             }
-            text_search_value = _text_search(
-                merged["subject"], merged["body"], merged["tags"]
-            )
-            vector = embedder([text_search_value])[0].tolist()
-
-            record = {
+            text = _text_search(merged["subject"], merged["body"], merged["tags"])
+            vector = np.asarray(embedder([text])[0], dtype=np.float32)
+            tickets = _qual(self._schema, TABLE_NAME)
+            update_sql = sql.SQL(
+                """
+                UPDATE {tickets} SET
+                    subject = %(subject)s,
+                    body = %(body)s,
+                    answer = %(answer)s,
+                    type = %(type)s,
+                    queue = %(queue)s,
+                    priority = %(priority)s,
+                    language = %(language)s,
+                    version = %(version)s,
+                    tag_1 = %(tag_1)s, tag_2 = %(tag_2)s, tag_3 = %(tag_3)s,
+                    tag_4 = %(tag_4)s, tag_5 = %(tag_5)s, tag_6 = %(tag_6)s,
+                    tags = %(tags)s,
+                    text_search = %(text_search)s,
+                    embedding = %(embedding)s
+                WHERE id = %(id)s
+                """
+            ).format(tickets=tickets)
+            payload = {
                 "id": ticket_id,
-                # Preserve provenance — original_system_id is immutable once
-                # set (bulk rows keep their deterministic legacy id; user
-                # rows stay blank).
-                "original_system_id": existing.get("original_system_id", "") or "",
-                # Preserve the original row_index across the delete+insert cycle —
-                # the id is stable but row_index is what we use for stable
-                # ordering in `all_ids`.
-                "row_index": existing["row_index"],
-                **{
-                    k: merged[k]
-                    for k in (
-                        "subject",
-                        "body",
-                        "answer",
-                        "type",
-                        "queue",
-                        "priority",
-                        "language",
-                        "version",
-                    )
-                },
+                **merged,
                 **_tag_cols(merged["tags"]),
-                "tags": merged["tags"],
-                "text_search": text_search_value,
-                "vector": vector,
+                "text_search": text,
+                "embedding": vector,
             }
-            self._table.delete(_id_where(ticket_id))
-            self._table.add([record])
-            self._bump_dirty()
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(update_sql, payload)
+                conn.commit()
+            self._bump_seq()
         return True
 
     def delete_ticket(self, ticket_id: str) -> bool:
-        """Remove one ticket by id. Returns True if a row was removed.
-
-        Row_indexes are not compacted — gaps are fine because we only use
-        row_index for stable ordering, never as a direct table offset.
-        User-created tickets use UUIDv7 ids so delete-then-add cycles
-        never collide.
-        """
+        """Remove one ticket by id. Returns True if a row was removed."""
+        tickets = _qual(self._schema, TABLE_NAME)
         with self._write_lock:
-            if self._raw_get(ticket_id) is None:
-                return False
-            self._table.delete(_id_where(ticket_id))
-            self._bump_dirty()
-        return True
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("DELETE FROM {} WHERE id = %s").format(tickets),
+                        (ticket_id,),
+                    )
+                    removed = cur.rowcount > 0
+                conn.commit()
+            if removed:
+                self._bump_seq()
+        return removed
+
+    # --- retrieval helpers (used by retrieval/hybrid + prompts/draft_reply) -
+
+    def search_bm25(
+        self,
+        *,
+        query: str,
+        where_sql: sql.Composable | None,
+        where_params: tuple,
+        limit: int,
+    ) -> list[str]:
+        """Top-``limit`` ids ranked by ts_rank_cd against ``query``."""
+        tickets = _qual(self._schema, TABLE_NAME)
+        base = sql.SQL(
+            "SELECT id FROM {tbl}, websearch_to_tsquery('simple', %s) q "
+            "WHERE tsv @@ q"
+        ).format(tbl=tickets)
+        params: tuple = (query,)
+        if where_sql is not None:
+            base = base + sql.SQL(" AND ") + where_sql
+            params = params + where_params
+        base = base + sql.SQL(" ORDER BY ts_rank_cd(tsv, q) DESC LIMIT %s")
+        params = params + (limit,)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(base, params)
+            return [r[0] for r in cur.fetchall()]
+
+    def search_vector(
+        self,
+        *,
+        qvec: np.ndarray,
+        where_sql: sql.Composable | None,
+        where_params: tuple,
+        limit: int,
+    ) -> list[str]:
+        """Top-``limit`` ids by cosine distance to ``qvec``."""
+        tickets = _qual(self._schema, TABLE_NAME)
+        base = sql.SQL("SELECT id FROM {tbl}").format(tbl=tickets)
+        params: tuple = ()
+        if where_sql is not None:
+            base = base + sql.SQL(" WHERE ") + where_sql
+            params = where_params
+        base = base + sql.SQL(" ORDER BY embedding <=> %s LIMIT %s")
+        params = params + (np.asarray(qvec, dtype=np.float32), limit)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(base, params)
+            return [r[0] for r in cur.fetchall()]
+
+    def fetch_for_hydration(self, ids: list[str]) -> list[dict]:
+        """Return rows needed for hydrate_ids (subject, body snippet, etc.)."""
+        if not ids:
+            return []
+        tickets = _qual(self._schema, TABLE_NAME)
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    sql.SQL(
+                        "SELECT id, subject, body, language, queue, priority "
+                        "FROM {tbl} WHERE id = ANY(%s)"
+                    ).format(tbl=tickets),
+                    (list(ids),),
+                )
+                return cur.fetchall()
+
+    def grounding_candidates(
+        self,
+        *,
+        qvec: np.ndarray,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Top-``limit`` rows by vector similarity for draft_reply grounding.
+
+        Returns subject/body/answer/language plus a pre-computed
+        ``similarity`` (cosine) so callers don't need the raw embedding.
+        """
+        tickets = _qual(self._schema, TABLE_NAME)
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    sql.SQL(
+                        "SELECT id, subject, body, answer, language, "
+                        "1 - (embedding <=> %s) AS similarity "
+                        "FROM {tbl} ORDER BY embedding <=> %s LIMIT %s"
+                    ).format(tbl=tickets),
+                    (
+                        np.asarray(qvec, dtype=np.float32),
+                        np.asarray(qvec, dtype=np.float32),
+                        limit,
+                    ),
+                )
+                return cur.fetchall()
+
+    def group_count_query(
+        self,
+        *,
+        group_by: str,
+        where_sql: sql.Composable | None,
+        where_params: tuple,
+    ) -> list[dict]:
+        """GROUP BY counts for ``group_by`` (scalar field or 'tags')."""
+        tickets = _qual(self._schema, TABLE_NAME)
+        if group_by == "tags":
+            base = sql.SQL(
+                "SELECT t AS group_value, count(*) AS cnt "
+                "FROM {tbl}, unnest(tags) AS t"
+            ).format(tbl=tickets)
+            if where_sql is not None:
+                base = base + sql.SQL(" WHERE ") + where_sql
+            base = (
+                base
+                + sql.SQL(" AND t <> '' " if where_sql is not None else " WHERE t <> '' ")
+                + sql.SQL("GROUP BY t ORDER BY cnt DESC")
+            )
+        else:
+            base = sql.SQL(
+                "SELECT {col} AS group_value, count(*) AS cnt FROM {tbl}"
+            ).format(col=sql.Identifier(group_by), tbl=tickets)
+            if where_sql is not None:
+                base = base + sql.SQL(" WHERE ") + where_sql
+            base = base + sql.SQL(" GROUP BY {col} ORDER BY cnt DESC").format(
+                col=sql.Identifier(group_by)
+            )
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(base, where_params)
+                return cur.fetchall()

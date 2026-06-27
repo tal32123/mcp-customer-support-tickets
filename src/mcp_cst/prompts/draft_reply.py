@@ -96,9 +96,9 @@ def select_grounding(
     grounding is better than refusing the prompt).
     """
     qvec = embedder([target_text])[0]
-    candidates = (
-        store.table.search(qvec.tolist(), query_type="vector").limit(50).to_list()
-    )
+    # Postgres returns cosine similarity directly via `1 - (embedding <=> q)`;
+    # vectors were L2-normalized at index time so this == dot product.
+    candidates = store.grounding_candidates(qvec=qvec, limit=50)
     scored: list[Grounding] = []
     for r in candidates:
         if r["id"] == target_id:
@@ -111,16 +111,7 @@ def select_grounding(
         # it can be embedded in the prompt.
         if looks_like_injection(body) or looks_like_injection(answer):
             continue
-        # Vectors are L2-normalized at index time so dot == cosine. We
-        # compute on the already-fetched candidate vectors rather than
-        # trusting whatever distance metric LanceDB used. Re-normalize
-        # defensively in case a store was built by an older/buggy code
-        # path -- otherwise the 0.70 threshold becomes meaningless.
-        cand_vec = np.asarray(r["vector"], dtype=np.float32)
-        norm = float(np.linalg.norm(cand_vec))
-        if norm > 0:
-            cand_vec = cand_vec / norm
-        sim = float(np.dot(qvec, cand_vec))
+        sim = float(r["similarity"])
         if sim < SIMILARITY_THRESHOLD:
             continue
         scored.append(

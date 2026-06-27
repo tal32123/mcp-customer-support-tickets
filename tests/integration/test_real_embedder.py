@@ -10,7 +10,6 @@ won't reject the decorator on collection.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -50,26 +49,33 @@ def _pick_seed_rows(raw: list[dict], k: int = 30) -> list[dict]:
     return seeded[:k]
 
 
-def test_real_embedder_finds_german_login_ticket(
-    tmp_path: Path, raw_ticket_rows: list[dict]
-) -> None:
-    """`search_tickets` with the German query "Anmeldung" must surface a
-    German ticket above any English/Hebrew ticket. Then `draft_reply` against
-    that ticket must produce a prompt that quotes the German subject verbatim.
-    """
+@pytest.fixture
+def store(pg_dsn: str, pg_schema: str, raw_ticket_rows: list[dict]):
     embedder = SentenceTransformerEmbedder("intfloat/multilingual-e5-small")
     seed = _pick_seed_rows(raw_ticket_rows, k=30)
-
-    store = TicketStore.create(
-        path=tmp_path / "real-store",
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="integration",
         rows=seed,
         embedder=embedder.embed_passages,
         embedding_dim=embedder.dim,
     )
+    try:
+        yield s, embedder
+    finally:
+        s.close()
+
+
+def test_real_embedder_finds_german_login_ticket(store) -> None:
+    """`search_tickets` with the German query "Anmeldung" must surface a
+    German ticket above any English/Hebrew ticket. Then `draft_reply` against
+    that ticket must produce a prompt that quotes the German subject verbatim.
+    """
+    s, embedder = store
 
     result = search_tickets_impl(
-        store,
+        s,
         embedder.embed_queries,
         q="Anmeldung",
         limit=5,
@@ -83,11 +89,11 @@ def test_real_embedder_finds_german_login_ticket(
 
     de_hits = [h for h in hits if h["language"] == "de"]
     target_id = de_hits[0]["id"] if de_hits else hits[0]["id"]
-    target_rec = store.get(target_id)
+    target_rec = s.get(target_id)
     assert target_rec is not None
 
     out = draft_reply_impl(
-        store,
+        s,
         embedder.embed_queries,
         ticket_id=target_id,
         target_language="de",

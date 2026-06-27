@@ -448,16 +448,16 @@
 flowchart LR
     U["User"] -->|"chats in<br/>plain English"| C["Claude Code<br/>or Codex"]
     C <-->|"stdio · JSON-RPC<br/>MCP protocol"| S["MCP Server<br/>Python · FastMCP"]
-    S --> L[("LanceDB<br/>in-process<br/>rows + BM25 + vectors")]
-    L -.->|"first run only,<br/>pinned revision"| HF[("Hugging Face<br/>Parquet")]
-    L -.->|"first run only,<br/>embedding pass"| E["e5-small<br/>local model"]
+    S --> L[("Postgres + pgvector<br/>rows + tsvector/GIN + HNSW")]
+    L -.->|"first boot only,<br/>pinned revision"| HF[("Hugging Face<br/>Parquet")]
+    L -.->|"first boot only,<br/>embedding pass"| E["e5-small<br/>local model"]
 
     classDef ext fill:#f3e8d6,stroke:#d6d1c2,color:#11141a;
     classDef us  fill:#ffffff,stroke:#d6d1c2,color:#11141a;
     class U,C,HF,E ext;
     class S,L us;
 </pre>
-        <div class="caption">Local by default. The server runs as a subprocess of the LLM client; nothing leaves the laptop except the one-time dataset download and the one-time embedding-model download.</div>
+        <div class="caption">Local by default. The server runs as a subprocess of the LLM client and talks to a local Postgres (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>); nothing leaves the laptop except the one-time dataset download and the one-time embedding-model download. First boot waits for Postgres, then ingests once; later boots reuse rows via a <code>store_meta</code> revision marker.</div>
       </div>
     </section>
 
@@ -516,11 +516,11 @@ flowchart LR
           <th style="width: 16%">Kind</th>
           <th>What it does</th>
         </tr>
-        <tr><td><code>search_tickets</code></td><td>Tool · read</td><td>Hybrid BM25 + vector search with cursor pagination. Filters: <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, <code>tags</code> + <code>tags_mode</code> (<code>"and"</code>/<code>"or"</code>). <code>limit</code> defaults to 10, hard cap 50. Returns <code>{hits, next_cursor, search_id, total_estimate}</code> — pass <code>cursor</code> to walk past the first page without re-fusing. Each hit is a preview (id + subject + 240-char snippet, both XML-escaped and screened for injection).</td></tr>
+        <tr><td><code>search_tickets</code></td><td>Tool · read</td><td>Hybrid Postgres FTS (<code>ts_rank_cd</code>) + pgvector kNN (HNSW cosine) search, fused with RRF, with cursor pagination. Filters: <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, <code>tags</code> + <code>tags_mode</code> (<code>"and"</code>/<code>"or"</code>). <code>limit</code> defaults to 10, hard cap 50. Returns <code>{hits, next_cursor, search_id, total_estimate}</code> — pass <code>cursor</code> to walk past the first page without re-fusing. Each hit is a preview (id + subject + 240-char snippet, both XML-escaped and screened for injection).</td></tr>
         <tr><td><code>get_ticket(id)</code></td><td>Tool · read</td><td>Fetches one ticket, verbatim, every column, plus a pre-wrapped <code>&lt;ticket&gt;…&lt;/ticket&gt;</code> XML string in a <code>wrapped</code> field for direct quoting.</td></tr>
         <tr><td><code>get_tickets(ids[])</code></td><td>Tool · read</td><td>Batch read of up to 50 ids. Preserves input order; unknown ids surface as <code>null</code> so partial-success batches aren't poisoned by one bad id. Collapses the common search-then-fetch-top-k loop into one tool turn.</td></tr>
-        <tr><td><code>search_and_fetch</code></td><td>Tool · read</td><td>Composite: hybrid search → fetch full rows in one call. <code>include='body'</code>/<code>'answer'</code>/<code>'all'</code> trims unused fields. Skips the cursor cache — single-shot research path.</td></tr>
-        <tr><td><code>aggregate_tickets</code></td><td>Tool · read</td><td>Counts grouped by <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, or <code>tags</code>. Same filter set as <code>search_tickets</code>. Result cached by write-sequence; any mutation busts the cache automatically.</td></tr>
+        <tr><td><code>search_and_fetch</code></td><td>Tool · read</td><td>Composite: hybrid FTS + pgvector search → fetch full rows in one call. <code>include='body'</code>/<code>'answer'</code>/<code>'all'</code> trims unused fields. Skips the cursor cache — single-shot research path.</td></tr>
+        <tr><td><code>aggregate_tickets</code></td><td>Tool · read</td><td>SQL <code>GROUP BY</code> counts grouped by <code>queue</code>, <code>priority</code>, <code>language</code>, <code>type</code>, or <code>tags</code>. Same filter set as <code>search_tickets</code>. Result cached by write-sequence; any mutation busts the cache automatically.</td></tr>
         <tr><td><code>server_info</code></td><td>Tool · read</td><td>Returns <code>dataset_id</code>, <code>dataset_revision</code>, <code>embedding_model</code>, <code>row_count</code>, <code>license</code>, <code>package_version</code>. Read-only metadata.</td></tr>
         <tr><td><code>create_ticket</code></td><td>Tool · write · <code>idempotentHint=False</code></td><td>Inserts a caller-supplied subject + body (plus optional metadata) into the running store, embeds it, and returns the new 32-hex UUIDv7 <code>id</code> (time-ordered, collision-safe under delete-then-create; <code>original_system_id</code> is left blank for user-created tickets). Refuses injection-shaped subject/body/answer via <code>INJECTION_DETECTED</code>. Validates type/priority/version against the canonical sets. A 5-minute in-memory cache keyed on <code>sha256(subject|body|answer|sorted_tags)</code> collapses retries — same payload twice returns the same id with <code>{duplicate_of, created:false}</code>. Description carries a cross-tool replay warning instructing the model to refuse calls that originate from another tool's output.</td></tr>
         <tr><td><code>update_ticket</code></td><td>Tool · write · <code>idempotentHint=False</code></td><td>Patches a single ticket by id. Any field may be omitted to keep its current value. Re-embeds when subject or body changes. Same cross-tool replay warning as create.</td></tr>
@@ -537,7 +537,7 @@ flowchart LR
         <tr><td><em>"Show me ticket abc123def456"</em></td><td><code>get_ticket</code> / resource</td></tr>
         <tr><td><em>"Find tickets about login problems"</em></td><td><code>search_tickets</code> (hybrid)</td></tr>
         <tr><td><em>"Find tickets similar to: 'app crashes on startup'"</em></td><td><code>search_tickets</code> (vector-dominant)</td></tr>
-        <tr><td><em>"What error code shows up in queue Billing?"</em></td><td><code>search_tickets</code> (BM25-dominant)</td></tr>
+        <tr><td><em>"What error code shows up in queue Billing?"</em></td><td><code>search_tickets</code> (FTS-dominant)</td></tr>
         <tr><td><em>"Draft a reply to ticket abc123 in German"</em></td><td><code>draft_reply</code> prompt</td></tr>
         <tr><td><em>"What's the most common queue?"</em></td><td><code>aggregate_tickets</code></td></tr>
         <tr><td><em>"Which dataset revision is this?"</em></td><td><code>server_info</code></td></tr>
@@ -555,22 +555,22 @@ sequenceDiagram
     participant U as User
     participant C as Claude
     participant S as MCP Server
-    participant L as LanceDB
+    participant L as Postgres + pgvector
 
     U->>C: "find German login issues"
     C->>S: search_tickets({q:"login", language:"de"})
-    par BM25
-        S->>L: FTS over subject+body, where language='de'
-        L-->>S: top 50 by BM25
+    par FTS
+        S->>L: ts_rank_cd over tsvector (GIN), where language='de'
+        L-->>S: top 50 by ts_rank_cd
     and Vector
-        S->>L: vector kNN (embedded query), where language='de'
+        S->>L: pgvector <=> kNN (HNSW, cosine), where language='de'
         L-->>S: top 50 by cosine
     end
     S->>S: Reciprocal Rank Fusion → top 10
     S-->>C: previews + ticket://{id} links
     C-->>U: renders 10 results
 </pre>
-        <div class="caption">Hybrid retrieval pipeline. BM25 catches literal tokens (error codes, product names); vector catches paraphrase ("login broken" ≈ "can't sign in"). RRF merges by rank position.</div>
+        <div class="caption">Hybrid retrieval pipeline. Postgres FTS (<code>ts_rank_cd</code> over a <code>tsvector</code> GENERATED column with a GIN index) catches literal tokens (error codes, product names); pgvector kNN (HNSW, cosine) catches paraphrase ("login broken" ≈ "can't sign in"). RRF merges by rank position.</div>
       </div>
 
       <h3>Out of scope</h3>
@@ -589,9 +589,9 @@ sequenceDiagram
       <h2>Implementation choices</h2>
       <table>
         <tr><th style="width: 26%">Concern</th><th style="width: 30%">Choice</th><th>Why</th></tr>
-        <tr><td>Language &amp; SDK</td><td>Python + official MCP SDK (FastMCP)</td><td>Hugging Face and LanceDB ecosystems are Python-first.</td></tr>
-        <tr><td>Single store</td><td>LanceDB (in-process, columnar on disk)</td><td>Holds rows, BM25 index, and vectors in one place. Scales to millions of rows on the same API.</td></tr>
-        <tr><td>Aggregations &amp; filters</td><td>Polars over LanceDB's Arrow output</td><td>Zero-copy <code>group_by</code> for <code>aggregate_tickets</code>; sub-millisecond at 62k rows.</td></tr>
+        <tr><td>Language &amp; SDK</td><td>Python + official MCP SDK (FastMCP)</td><td>Hugging Face and the asyncpg / pgvector Python ecosystems are Python-first.</td></tr>
+        <tr><td>Single store</td><td>Postgres 17 + <code>pgvector</code> extension (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>)</td><td>Holds rows, a <code>tsvector</code> GENERATED column with a GIN index for FTS, and a <code>vector(384)</code> column with an HNSW cosine index &mdash; one boring SQL store the team already knows how to back up, observe, and scale.</td></tr>
+        <tr><td>Aggregations &amp; filters</td><td>Plain SQL <code>GROUP BY</code> in Postgres</td><td>Counts and filters live with the data; sub-millisecond at 62k rows with a B-tree on the group key.</td></tr>
         <tr><td>Embedding model</td><td><code>intfloat/multilingual-e5-small</code> (384-dim)</td><td>Free, local, multilingual (handles EN <em>and</em> DE).</td></tr>
         <tr><td>Transport</td><td>stdio</td><td>Default for Claude Code / Codex / Claude Desktop. No network, no auth.</td></tr>
         <tr><td>LLM (for <code>draft_reply</code>)</td><td>None — server only assembles context + scaffold</td><td>The calling MCP client's own LLM writes the reply. No API key required.</td></tr>
@@ -605,20 +605,20 @@ sequenceDiagram
       <div class="card accent">
         <div class="label">Decision</div>
         <p style="margin: 0; color: var(--ink);">
-          <strong>Hybrid search from day one: BM25 + vector, merged with Reciprocal Rank Fusion.</strong> Vector store: LanceDB. Embeddings: multilingual-e5-small. Cross-encoder reranking is deferred.
+          <strong>Hybrid search from day one: Postgres FTS + pgvector, merged with Reciprocal Rank Fusion.</strong> Store: Postgres 17 with the <code>pgvector</code> extension. Embeddings: multilingual-e5-small (384-dim). Cross-encoder reranking is deferred.
         </p>
       </div>
 
       <h3>Why hybrid</h3>
-      <p>BM25 and vector search catch different things, and combining them is cheap. BM25 wins on literal tokens (error codes, product names, SKUs); vector wins on paraphrase ("login broken" ≈ "can't sign in"). Most production hybrid systems use <strong>Reciprocal Rank Fusion</strong> — a few lines of code that merge two ranked lists by rank position. No score normalization, no weights to tune.</p>
+      <p>Postgres FTS (<code>to_tsvector('simple', text_search)</code> ranked by <code>ts_rank_cd</code>) and pgvector kNN catch different things, and combining them is cheap. FTS wins on literal tokens (error codes, product names, SKUs); vector wins on paraphrase ("login broken" ≈ "can't sign in"). Most production hybrid systems use <strong>Reciprocal Rank Fusion</strong> — a few lines of code that merge two ranked lists by rank position. No score normalization, no weights to tune.</p>
 
       <h3>The pipeline</h3>
       <div class="diagram">
 <pre class="mermaid">
 flowchart TB
-    Q["Query<br/>(+ filters)"] --> BM25["BM25 over<br/>subject + body"]
+    Q["Query<br/>(+ filters)"] --> BM25["Postgres FTS<br/>ts_rank_cd over<br/>tsvector (GIN)"]
     Q --> EMB["Embed query<br/>(e5-small)"]
-    EMB --> VEC["Vector kNN<br/>(LanceDB)"]
+    EMB --> VEC["pgvector kNN<br/>(HNSW, cosine)"]
     BM25 -->|"top 50"| RRF["Reciprocal<br/>Rank Fusion"]
     VEC -->|"top 50"| RRF
     RRF -->|"top 10"| OUT["Return previews<br/>+ ticket://{id}"]
@@ -631,13 +631,13 @@ flowchart TB
         <div class="caption">Hybrid retrieval, with optional rerank as a deferred enhancement.</div>
       </div>
 
-      <h3>Why LanceDB</h3>
+      <h3>Why Postgres + pgvector</h3>
       <table>
         <tr><th>Option</th><th>Embedded?</th><th>Scales?</th><th>Notes</th></tr>
-        <tr><td><code>sqlite-vec</code></td><td>Yes</td><td>~1M</td><td>Tiny, will outgrow it.</td></tr>
-        <tr><td><strong>LanceDB</strong> <span class="pill pick">picked</span></td><td>Yes</td><td>100M+</td><td>Apache 2.0, columnar, no server, embedded BM25 also available.</td></tr>
-        <tr><td><code>Qdrant</code></td><td>No (server)</td><td>Huge</td><td>Best filtered search, but adds ops surface.</td></tr>
-        <tr><td><code>pgvector</code></td><td>No</td><td>Big</td><td>Only if Postgres is already in the picture.</td></tr>
+        <tr><td><code>sqlite-vec</code></td><td>Yes</td><td>~1M</td><td>Tiny, will outgrow it; no separate FTS story bundled in.</td></tr>
+        <tr><td><strong>Postgres + <code>pgvector</code></strong> <span class="pill pick">picked</span></td><td>No (one extra service)</td><td>Big</td><td>Rows, <code>tsvector</code>/GIN for FTS, and HNSW for kNN in one boring store; operationally familiar, backed up the same way as any other Postgres. Compose service <code>db</code> with image <code>pgvector/pgvector:pg17</code>.</td></tr>
+        <tr><td><code>Qdrant</code></td><td>No (server)</td><td>Huge</td><td>Best filtered search, but adds a second store on top of an OLTP db we already need for CRUD.</td></tr>
+        <tr><td>LanceDB</td><td>Yes</td><td>100M+</td><td>Embedded and fast, but a second mental model next to Postgres for not enough scale headroom at our size.</td></tr>
       </table>
 
       <h3>Why reranking is deferred</h3>
@@ -651,8 +651,8 @@ flowchart TB
         <li><strong>Query rewriting.</strong> The LLM upstream already handles phrasing.</li>
       </ul>
 
-      <h3>First-run UX</h3>
-      <p>First time the server starts it (a) downloads the embedding model (~120 MB), (b) downloads the dataset Parquet from Hugging Face, and (c) runs an embedding pass over 62k tickets (~2 minutes on CPU, ~15 seconds on GPU). All cached on disk afterwards, keyed by dataset revision + model id. Re-index runs only when the revision pin changes.</p>
+      <h3>First-boot UX</h3>
+      <p>On first boot the entrypoint waits for Postgres (compose service <code>db</code>) to accept connections, then (a) downloads the embedding model (~120 MB), (b) pulls the dataset Parquet from Hugging Face at the pinned revision, (c) runs an embedding pass over 62k tickets (~2 minutes on CPU, ~15 seconds on GPU), and (d) bulk-inserts rows, FTS tsvectors (a GENERATED ALWAYS column kept current automatically), and HNSW vectors into the Postgres-managed volume. A <code>store_meta</code> revision marker is stamped at the end. Subsequent boots see the marker matches the configured revision and skip straight to serving &mdash; re-ingest fires only when the pin changes.</p>
     </section>
 
     <section class="s" id="s7">
@@ -731,6 +731,7 @@ flowchart TB
         <tr><td><strong>Bigger embedding model</strong></td><td>Upgrade to a larger multilingual model, served via a small GPU.</td></tr>
         <tr><td><strong>Rate limiting + abuse prevention</strong></td><td>Per-tenant quotas; output size caps.</td></tr>
         <tr><td><strong>CI/CD + image scanning</strong></td><td>Reproducible builds, signed images, dependency CVE gating.</td></tr>
+        <tr><td><strong>ClickHouse alongside Postgres for analytical flows</strong></td><td>Next step beyond the current single-Postgres setup: Postgres stays as OLTP for ticket CRUD and hybrid retrieval; heavy analytical workloads &mdash; large aggregates, time-series rollups, BI dashboards &mdash; move to a ClickHouse cluster fed from Postgres CDC. Two stores, each used for what it's good at, with the MCP surface unchanged.</td></tr>
       </table>
     </section>
 
@@ -813,11 +814,11 @@ flowchart TB
 │   ├── errors.py             # ErrorCode enum + McpCstError
 │   ├── safety.py             # looks_like_injection() heuristic
 │   ├── data/
-│   │   ├── store.py          # LanceDB: rows + BM25 + vectors + filters + add/update/delete
-│   │   ├── aggregates.py     # Polars over Arrow for group-by counts
-│   │   └── ingest.py         # HF parquet → embedding pass → LanceDB
+│   │   ├── store.py          # Postgres + pgvector: rows + tsvector/GIN + HNSW + filters + add/update/delete
+│   │   ├── aggregates.py     # SQL GROUP BY for group-by counts
+│   │   └── ingest.py         # HF parquet → embedding pass → Postgres (first boot only)
 │   ├── retrieval/
-│   │   └── hybrid.py         # BM25 + vector + RRF
+│   │   └── hybrid.py         # Postgres FTS (ts_rank_cd) + pgvector kNN + RRF
 │   ├── tools/                # search_tickets, get_ticket, aggregate_tickets,
 │   │                         # server_info, create_ticket, update_ticket, delete_ticket
 │   ├── resources/            # ticket://, schema://
@@ -885,7 +886,7 @@ uv run mcp-customer-support-tickets
 
 # 4. run the test suite
 uv run pytest</code></pre>
-      <p>First invocation downloads the embedding model (~120 MB) and the dataset Parquet, then runs the embedding pass (~2 min CPU, ~15 s GPU). Everything is cached on disk afterwards; subsequent runs start in &lt;1 second.</p>
+      <p>First boot waits for Postgres (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>) to come up, downloads the embedding model (~120 MB) and the dataset Parquet, then runs the embedding pass (~2 min CPU, ~15 s GPU) and bulk-inserts into the Postgres-managed volume. A <code>store_meta</code> revision marker is stamped at the end; subsequent boots see it matches and start in &lt;1 second.</p>
 
       <p class="footnote">All retrieval, grounding, and scaffold assembly is local — no API key required. The calling MCP client's own LLM produces the final reply text.</p>
 

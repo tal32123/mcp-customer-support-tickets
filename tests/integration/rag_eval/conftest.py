@@ -16,7 +16,7 @@ Dataset notes (as of revision "main"):
   - The dataset "version" column is int, not str. Rows are coerced to str so
     the PyArrow schema does not reject them.
   - The dataset has tag_1..tag_8; the store schema uses tag_1..tag_6. Extra
-    columns are silently ignored by TicketStore.create.
+    columns are silently ignored by TicketStore.create_with_rows.
 """
 
 from __future__ import annotations
@@ -118,14 +118,32 @@ def sampled_rows(hf_rows: list[dict]) -> list[dict]:
 
 
 @pytest.fixture(scope="package")
+def pg_schema_pkg(pg_dsn):
+    import uuid
+    import psycopg
+    from psycopg import sql
+
+    name = f"rageval_{uuid.uuid4().hex[:12]}"
+    yield name
+    try:
+        with psycopg.connect(pg_dsn, autocommit=True) as conn:
+            conn.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(name))
+            )
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="package")
 def eval_store(
+    pg_dsn: str,
+    pg_schema_pkg: str,
     sampled_rows: list[dict],
     real_embedder: SentenceTransformerEmbedder,
-    tmp_path_factory,
 ) -> TicketStore:
-    path = tmp_path_factory.mktemp("rag-eval-store") / "store"
-    return TicketStore.create(
-        path=path,
+    return TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema_pkg,
         revision=_REVISION,
         rows=sampled_rows,
         embedder=real_embedder.embed_passages,

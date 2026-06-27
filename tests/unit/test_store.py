@@ -16,14 +16,16 @@ def fake_embed(texts: list[str]) -> np.ndarray:
 
 
 @pytest.fixture
-def store(tmp_path, raw_ticket_rows):
-    s = TicketStore.create(
-        path=tmp_path / "store",
+def store(pg_dsn, pg_schema, raw_ticket_rows):
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="testrev",
         rows=raw_ticket_rows,
         embedder=fake_embed,
     )
-    return s
+    yield s
+    s.close()
 
 
 def test_row_count(store, raw_ticket_rows):
@@ -82,15 +84,20 @@ def test_get_missing_returns_none(store):
     assert store.get("nonexistent00") is None
 
 
-def test_open_existing(store, raw_ticket_rows, tmp_path):
-    reopened = TicketStore.open(path=store.path, revision="testrev")
+def test_open_existing(store, pg_dsn, raw_ticket_rows):
+    reopened = TicketStore.connect(
+        dsn=pg_dsn,
+        schema=store.schema_name,
+        revision="testrev",
+    )
     assert reopened.row_count() == len(raw_ticket_rows)
+    reopened.close()
 
 
 def test_get_escapes_quotes_in_id(store):
-    """H1: a malicious id with a single quote must not corrupt the WHERE clause."""
-    # Without escaping, this would expand to:  WHERE id = 'x' OR '1'='1'
-    # and return an arbitrary row. With escaping, no rows match.
+    """Parameterized SQL means a literal-quote id matches nothing — psycopg
+    binds it as a value, not as SQL. Regression guard against any future
+    string-formatted WHERE clause."""
     assert store.get("x' OR '1'='1") is None
     assert store.get("'; DROP TABLE tickets; --") is None
 
@@ -189,7 +196,7 @@ def test_delete_ticket_unknown_id_returns_false(store):
     assert store.row_count() == before
 
 
-def test_ingest_coerces_null_fields(tmp_path):
+def test_ingest_coerces_null_fields(pg_dsn, pg_schema):
     """Regression: HF rows with None values must not poison the store."""
     rows = [
         {
@@ -209,8 +216,9 @@ def test_ingest_coerces_null_fields(tmp_path):
             "tag_6": "",
         },
     ]
-    s = TicketStore.create(
-        path=tmp_path / "null-store",
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=rows,
         embedder=fake_embed,
@@ -219,9 +227,10 @@ def test_ingest_coerces_null_fields(tmp_path):
     assert rec.answer == ""
     assert rec.type == ""
     assert rec.version == ""
+    s.close()
 
 
-def test_null_subject_body_not_poisoning_bm25(tmp_path):
+def test_null_subject_body_not_poisoning_bm25(pg_dsn, pg_schema):
     """Regression #300: a None subject/body must not write the literal
     string 'None' into the BM25 text — the persisted text_search column
     must contain no spurious 'None' tokens."""
@@ -243,11 +252,13 @@ def test_null_subject_body_not_poisoning_bm25(tmp_path):
             "tag_6": "",
         },
     ]
-    s = TicketStore.create(
-        path=tmp_path / "none-bm25",
+    s = TicketStore.create_with_rows(
+        dsn=pg_dsn,
+        schema=pg_schema,
         revision="r",
         rows=rows,
         embedder=fake_embed,
     )
-    text = s.table.to_arrow().column("text_search").to_pylist()[0]
+    text = s.text_search_of(s.all_ids()[0])
     assert "None" not in text
+    s.close()
