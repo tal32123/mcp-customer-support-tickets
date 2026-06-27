@@ -6,5 +6,6 @@ set -e
 if [ -d /opt/store-seed ] && [ -z "$(ls -A /data 2>/dev/null)" ]; then
   echo "[entrypoint] seeding /data from /opt/store-seed (first boot)..."
   cp -a /opt/store-seed/. /data/
+  echo "[entrypoint] seed complete."
 fi
 exec "$@"
