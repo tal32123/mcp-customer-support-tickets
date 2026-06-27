@@ -291,7 +291,13 @@ def search_tickets(
     ] = None,
     language: Annotated[
         _LanguageLit | None,
-        Field(description="Restrict to English, German, or Hebrew tickets."),
+        Field(
+            description=(
+                "Restrict to one language (en, de, he). Pass this when the user's "
+                "query is clearly in one language and they want same-language "
+                "results; omit for cross-lingual recall."
+            )
+        ),
     ] = None,
     type: Annotated[
         _TypeLit | None,
@@ -357,7 +363,12 @@ def aggregate_tickets(
     ] = None,
     language: Annotated[
         _LanguageLit | None,
-        Field(description="Restrict to English, German, or Hebrew."),
+        Field(
+            description=(
+                "Restrict to one language (en, de, he). Pass this when the user's "
+                "query is clearly in one language; omit for cross-lingual recall."
+            )
+        ),
     ] = None,
     type: Annotated[
         _TypeLit | None,
@@ -626,7 +637,12 @@ def search_and_fetch(
     ] = None,
     language: Annotated[
         _LanguageLit | None,
-        Field(description="Restrict to English, German, or Hebrew."),
+        Field(
+            description=(
+                "Restrict to one language (en, de, he). Pass this when the user's "
+                "query is clearly in one language; omit for cross-lingual recall."
+            )
+        ),
     ] = None,
     type: Annotated[
         _TypeLit | None,

@@ -30,16 +30,18 @@ def test_draft_reply_grounding_coherence(
     store_ids_by_row_index: list[str],
     record_summary,
 ) -> None:
-    """For a 20-ticket sample, grounding docs match the target's `field` at
+    """For a 100-ticket sample, grounding docs match the target's `field` at
     >= threshold. Type=0.60 (4 coarse types, hybrid retrieval crosses them);
     language=0.95 (server explicitly prefers same-language candidates).
+    n=100 gives ~±0.10 95% CI on a 0.67 proportion — one ticket no longer
+    flips the threshold.
     """
     pairs = sample_grounding_targets(
         eval_store,
         real_embedder.embed_queries,
         sampled_rows,
         store_ids_by_row_index,
-        n=20,
+        n=100,
     )
     assert pairs, "no usable grounding pairs — check sampled_rows content"
 

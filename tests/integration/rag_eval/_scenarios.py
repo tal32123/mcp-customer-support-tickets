@@ -38,6 +38,75 @@ CROSS_LINGUAL_SCENARIOS: list[tuple[str, str, list[str]]] = [
 ]
 
 
+# 30 EN + 30 DE free-text queries for the no-filter language-purity baseline.
+# Mixed lengths (1-5 words) so the mean is not dominated by one query shape.
+PURITY_QUERIES_EN: list[str] = [
+    "login problem reset password",
+    "forgot my password",
+    "cannot log in",
+    "two factor authentication code",
+    "account locked out",
+    "change email address",
+    "delete my account",
+    "export my data",
+    "refund request",
+    "cancel subscription",
+    "invoice incorrect",
+    "billing question",
+    "charged twice",
+    "payment declined",
+    "credit card",
+    "package not delivered",
+    "shipping delay",
+    "tracking number missing",
+    "return item",
+    "warranty claim",
+    "app crashing on startup",
+    "error 500",
+    "cannot connect to server",
+    "upload failing",
+    "slow performance",
+    "mobile app bug",
+    "feature request",
+    "documentation unclear",
+    "how to integrate API",
+    "rate limit exceeded",
+]
+
+PURITY_QUERIES_DE: list[str] = [
+    "Passwort zurücksetzen",
+    "Passwort vergessen",
+    "Anmeldung funktioniert nicht",
+    "Zwei-Faktor-Authentifizierung Code",
+    "Konto gesperrt",
+    "E-Mail Adresse ändern",
+    "Konto löschen",
+    "Daten exportieren",
+    "Rückerstattung beantragen",
+    "Abonnement kündigen",
+    "Rechnung falsch",
+    "Frage zur Abrechnung",
+    "doppelt belastet",
+    "Zahlung abgelehnt",
+    "Kreditkarte",
+    "Paket nicht angekommen",
+    "Lieferung verspätet",
+    "Sendungsnummer fehlt",
+    "Artikel zurücksenden",
+    "Garantieanspruch",
+    "App stürzt beim Start ab",
+    "Fehler 500",
+    "keine Verbindung zum Server",
+    "Hochladen schlägt fehl",
+    "langsame Geschwindigkeit",
+    "mobile App Fehler",
+    "Funktionswunsch",
+    "Dokumentation unklar",
+    "wie integriere ich die API",
+    "Ratenlimit überschritten",
+]
+
+
 HARD_NEGATIVE_SCENARIOS: list[tuple[str, list[str], list[str]]] = [
     # (query, topic_A_keywords (should appear), topic_B_keywords (should NOT dominate top-3))
     ("password reset", ["password", "reset", "passwort"], ["shipping", "package", "delivery", "lieferung"]),

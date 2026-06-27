@@ -10,47 +10,60 @@ from mcp_cst.embedder import SentenceTransformerEmbedder
 from mcp_cst.retrieval import search_cache
 from mcp_cst.tools.search_tickets import search_tickets_impl
 
+from tests.integration.rag_eval._scenarios import (
+    PURITY_QUERIES_DE,
+    PURITY_QUERIES_EN,
+)
 from tests.integration.rag_eval.conftest import hit_languages
 
 
-def test_language_purity_german_query(
+def _mean_purity(store, embedder, queries: list[str], target_lang: str) -> float:
+    """Mean fraction of top-10 hits whose `language` equals `target_lang`,
+    averaged across `queries`. Queries that return no hits are skipped."""
+    fractions: list[float] = []
+    for q in queries:
+        langs = hit_languages(store, embedder, q, limit=10)
+        if not langs:
+            continue
+        fractions.append(langs.count(target_lang) / len(langs))
+    assert fractions, "no queries returned any hits"
+    return sum(fractions) / len(fractions)
+
+
+def test_language_purity_german(
     eval_store: TicketStore,
     real_embedder: SentenceTransformerEmbedder,
     record_summary,
 ) -> None:
-    """German free-text query: >= 90% of top-10 hits must be German."""
-    q = "Anmeldung Passwort"
-    langs = hit_languages(eval_store, real_embedder.embed_queries, q, limit=10)
-    assert langs, f"no hits for German query {q!r}"
-    de_fraction = langs.count("de") / len(langs)
-    record_summary("lang_purity_de", de_fraction)
-    assert de_fraction >= 0.90, (
-        f"German query {q!r}: expected >= 90% German results in top-10, "
-        f"got {de_fraction:.2%} — languages: {langs}"
+    """Mean German-purity across 30 free-text DE queries: >= 90%."""
+    avg = _mean_purity(
+        eval_store, real_embedder.embed_queries, PURITY_QUERIES_DE, "de"
+    )
+    record_summary("lang_purity_de", avg)
+    assert avg >= 0.90, (
+        f"DE purity: expected mean >= 90% across {len(PURITY_QUERIES_DE)} queries, "
+        f"got {avg:.2%}"
     )
 
 
-def test_language_purity_english_query(
+def test_language_purity_english(
     eval_store: TicketStore,
     real_embedder: SentenceTransformerEmbedder,
     record_summary,
 ) -> None:
-    """English free-text query: >= 70% of top-10 hits must be English.
+    """Mean English-purity across 30 free-text EN queries: >= 70%.
 
-    Threshold is 0.70 rather than 0.90 because the HF dataset is ~54% DE /
-    ~46% EN and short generic queries ("login", "problem", "password") include
-    English loanwords common in German IT-support text. A 30% cross-language
-    leak for these loanword queries is expected; the assertion is that the
-    majority of hits are English, not that it equals German purity.
+    Lower bar than DE because EN IT loanwords ("login", "password") appear in
+    DE tickets, so naked EN queries leak. Filter pushdown (test_filter_pushdown)
+    is the precision tool when callers need 100%.
     """
-    q = "login problem reset password"
-    langs = hit_languages(eval_store, real_embedder.embed_queries, q, limit=10)
-    assert langs, f"no hits for English query {q!r}"
-    en_fraction = langs.count("en") / len(langs)
-    record_summary("lang_purity_en", en_fraction)
-    assert en_fraction >= 0.70, (
-        f"English query {q!r}: expected >= 70% English results in top-10, "
-        f"got {en_fraction:.2%} — languages: {langs}"
+    avg = _mean_purity(
+        eval_store, real_embedder.embed_queries, PURITY_QUERIES_EN, "en"
+    )
+    record_summary("lang_purity_en", avg)
+    assert avg >= 0.70, (
+        f"EN purity: expected mean >= 70% across {len(PURITY_QUERIES_EN)} queries, "
+        f"got {avg:.2%}"
     )
 
 
@@ -96,8 +109,9 @@ def test_pagination_disjoint_pages(
     total_estimate = None
     pages = 0
 
+    # ponytail: cache_clear once before the walk; clearing per page invalidates the cursor.
+    search_cache.cache_clear()
     while True:
-        search_cache.cache_clear()
         result = search_tickets_impl(
             eval_store,
             real_embedder.embed_queries,

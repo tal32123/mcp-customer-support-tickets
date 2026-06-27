@@ -25,6 +25,8 @@ DESCRIPTION = make_description(
     use_for=(
         "Use this for: 'find tickets about login problems', 'tickets mentioning error 500', "
         "'tickets similar to: app crashes on startup', narrowing by language/queue/priority/type/tags. "
+        "When the user's query is clearly in one language, prefer setting `language=` to that code "
+        "for higher-purity results; omit it when cross-lingual recall matters. "
         "For long sweeps, pass the returned `next_cursor` back to fetch the next page."
     ),
     not_for=(

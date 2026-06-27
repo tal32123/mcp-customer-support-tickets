@@ -38,13 +38,19 @@ from mcp_cst.retrieval import search_cache
 from mcp_cst.tools.search_tickets import search_tickets_impl
 
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        "MCP_CST_EVAL_FULL" not in os.environ,
-        reason="set MCP_CST_EVAL_FULL=1 to run full RAG eval (downloads HF data + ~470MB model, ~5-10 min)",
-    ),
-]
+# ponytail: pytestmark in conftest is a no-op; apply the skip+integration marks
+# to every collected item in this package via the hook below.
+_SKIP = pytest.mark.skipif(
+    "MCP_CST_EVAL_FULL" not in os.environ,
+    reason="set MCP_CST_EVAL_FULL=1 to run full RAG eval (downloads HF data + ~470MB model, ~5-10 min)",
+)
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    for item in items:
+        if "rag_eval" in item.nodeid.replace("\\", "/"):
+            item.add_marker(pytest.mark.integration)
+            item.add_marker(_SKIP)
 
 _SAMPLE_ROWS = 2000
 _LANG_ROW_TARGETS: dict[str, int] = {"en": 1000, "de": 1000}
