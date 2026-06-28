@@ -18,12 +18,19 @@ dependencies = [
     "torch>=2.5",
 ]
 
-# Opt-in CUDA wheel: `uv sync --extra cuda` (default install uses CPU torch).
-[project.optional-dependencies]
-cuda = ["torch>=2.5"]
-
 [project.scripts]
 mcp-customer-support-tickets = "mcp_cst.server:main"
+
+# Pull torch from the PyTorch CUDA 12.4 wheel index so embedding can use
+# a local GPU when available. Runtime auto-falls back to CPU when no GPU
+# is present, so the same wheel works on CI / Railway / laptops.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
 
 [dependency-groups]
 dev = [

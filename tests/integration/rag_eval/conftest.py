@@ -52,11 +52,9 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(pytest.mark.integration)
             item.add_marker(_SKIP)
 
-_SAMPLE_ROWS = 2000
-_LANG_ROW_TARGETS: dict[str, int] = {"en": 1000, "de": 1000}
 _N_SEEDS = 500
 _LANG_SEED_TARGETS: dict[str, int] = {"en": 250, "de": 250}
-_REVISION = "rag-eval-v1"
+_REVISION = "main"
 _MODEL_NAME = "intfloat/multilingual-e5-small"
 
 _WORD_RE = re.compile(r"\w{4,}", re.UNICODE)
@@ -99,62 +97,49 @@ def real_embedder() -> SentenceTransformerEmbedder:
 
 
 @pytest.fixture(scope="package")
-def hf_rows() -> list[dict]:
-    from datasets import load_dataset
-
-    ds = load_dataset(
-        "Tobi-Bueck/customer-support-tickets",
-        revision="main",
-        split="train",
-    )
-    return [_coerce_row(dict(r)) for r in ds]
-
-
-@pytest.fixture(scope="package")
-def sampled_rows(hf_rows: list[dict]) -> list[dict]:
-    rng = random.Random(42)
-    rows = _stratified_sample(hf_rows, _LANG_ROW_TARGETS, rng)
-    return rows[:_SAMPLE_ROWS]
-
-
-@pytest.fixture(scope="package")
-def pg_schema_pkg(pg_dsn):
-    import uuid
-    import psycopg
-    from psycopg import sql
-
-    name = f"rageval_{uuid.uuid4().hex[:12]}"
-    yield name
-    try:
-        with psycopg.connect(pg_dsn, autocommit=True) as conn:
-            conn.execute(
-                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(name))
-            )
-    except Exception:
-        pass
-
-
-@pytest.fixture(scope="package")
 def eval_store(
     pg_dsn: str,
-    pg_schema_pkg: str,
-    sampled_rows: list[dict],
     real_embedder: SentenceTransformerEmbedder,
 ) -> TicketStore:
-    return TicketStore.create_with_rows(
+    """Open the existing pre-seeded ticket store (no DROP / no re-ingest).
+
+    The eval runs against whatever is already in ``pg_dsn`` — typically
+    a Railway-hosted pgvector with the full 62k-row HF dataset ingested.
+    Set TEST_DATABASE_URL to point the suite at any pg you want.
+    """
+    schema = os.environ.get("MCP_CST_DB_SCHEMA", "public")
+    return TicketStore.connect(
         dsn=pg_dsn,
-        schema=pg_schema_pkg,
+        schema=schema,
         revision=_REVISION,
-        rows=sampled_rows,
-        embedder=real_embedder.embed_passages,
         embedding_dim=real_embedder.dim,
     )
 
 
 @pytest.fixture(scope="package")
 def store_ids_by_row_index(eval_store: TicketStore) -> list[str]:
-    """Primary UUIDv7 ids in row-index order; gold-id lookup for known-item."""
+    """Primary ids in row-index order; gold-id lookup for known-item."""
     return eval_store.all_ids()
+
+
+@pytest.fixture(scope="package")
+def sampled_rows(eval_store: TicketStore) -> list[dict]:
+    """All rows from the live store in row_index order."""
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg import sql as psql
+
+    schema = eval_store.schema_name
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                psql.SQL(
+                    "SELECT subject, body, answer, type, queue, priority, "
+                    "language, version, tag_1, tag_2, tag_3, tag_4, tag_5, tag_6 "
+                    "FROM {}.tickets ORDER BY row_index"
+                ).format(psql.Identifier(schema))
+            )
+            return [dict(r) for r in cur.fetchall()]
 
 
 @pytest.fixture(scope="package")
