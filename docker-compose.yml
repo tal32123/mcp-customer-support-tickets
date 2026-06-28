@@ -7,6 +7,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tickets
+    ports:
+      - "5432:5432"   # exposed so you can seed / inspect from the host
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d tickets"]
       interval: 5s
@@ -31,6 +33,18 @@ services:
       PORT: "8000"
       DATABASE_URL: postgresql://postgres:postgres@db:5432/tickets
       MCP_CST_DB_SCHEMA: public
+    # Reserve all NVIDIA GPUs by default so embedding uses CUDA on hosts
+    # that have the NVIDIA Container Toolkit installed. The container's
+    # torch wheel is the CUDA build (from the pytorch CUDA base image);
+    # if the host has no GPU / no toolkit, comment this block out and
+    # torch will fall back to CPU at runtime.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   mcp_pgdata:

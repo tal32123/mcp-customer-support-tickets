@@ -21,9 +21,9 @@ dependencies = [
 [project.scripts]
 mcp-customer-support-tickets = "mcp_cst.server:main"
 
-# Pull torch from the PyTorch CUDA 12.4 wheel index so embedding can use
-# a local GPU when available. Runtime auto-falls back to CPU when no GPU
-# is present, so the same wheel works on CI / Railway / laptops.
+# Pull torch from the PyTorch CUDA 12.4 wheel index so a local GPU is
+# used when available. Runtime calls torch.cuda.is_available() and
+# transparently falls back to CPU when no GPU is present.
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"

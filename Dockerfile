@@ -24,8 +24,9 @@ WORKDIR /build
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
-# Torch is already in the base image and satisfies torch>=2.5; uv pip
-# install picks it up without re-downloading. No CPU-torch override here.
+# The base image ships torch 2.5.1+cu124 — same major version as the
+# pyproject's CUDA pin — so uv pip install picks it up without
+# re-downloading the wheel.
 RUN uv pip install --system --no-cache .
 
 # ---- runtime ----------------------------------------------------------------

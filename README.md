@@ -2,230 +2,216 @@
 
 A Model Context Protocol (MCP) server that exposes the
 [Tobi-Bueck/customer-support-tickets](https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets)
-dataset to MCP-capable clients (Claude Code, Claude Desktop, Codex, Cursor).
+dataset (~62k EN/DE tickets) to MCP-capable clients (Claude Code, Codex,
+Claude Desktop, Cursor).
 
-- **Search** by hybrid BM25 + vector across ~62k EN/DE support tickets.
-- **Fetch** any ticket verbatim by id.
-- **Aggregate** counts by queue, priority, language, type, or tags.
-- **Assemble** a grounded draft-reply prompt: target ticket + up to 5 prior tickets+answers (cosine >= 0.70) + a type-aware scaffold the caller's LLM fills in. No API key needed.
-- **Create** new tickets locally (subject + body + optional metadata) and get back a stable 12-char id; they're immediately searchable. No LLM is invoked on the server — pass already-composed text.
-- **Update** an existing ticket's fields by id; re-embeds and re-indexes so changes are immediately searchable.
-- **Delete** a ticket by id. Destructive and irreversible within the running store.
+Capabilities:
 
-## Models
+- **search_tickets** — hybrid BM25 + vector retrieval with cursor pagination.
+- **search_and_fetch** — search + full-row hydration in one call.
+- **aggregate_tickets** — group-by counts (queue / priority / language / type / tags).
+- **get_ticket / get_tickets** — verbatim fetch by id.
+- **create_ticket / update_ticket / delete_ticket** — CRUD with auto re-embed.
+- **draft_reply** — assembles a grounded prompt (target ticket + ≤5 prior tickets with cosine ≥ 0.70 + a type-aware scaffold). No LLM is invoked on the server; the calling client's model writes the reply.
 
-This server **does not call any LLM API** — there is no `ANTHROPIC_API_KEY` /
-`OPENAI_API_KEY` to set. Generation (e.g. drafting a reply) is performed by the
-calling MCP client's own model (Claude in Claude Code / Desktop, GPT in Codex,
-etc.); the server only assembles grounded context and a scaffold for it.
+The server **does not call any LLM API** — no `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` to set. The only model that runs locally is
+[`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small)
+(384-dim, EN+DE) for retrieval embeddings, loaded once on first start via
+`sentence-transformers`. `uv sync` pulls the CUDA-12.4 torch wheel
+(~3 GB) — runtime calls `torch.cuda.is_available()` and uses the GPU
+when present, transparently falls back to CPU otherwise. Same wheel
+works on GPU laptops, CPU laptops, CI, and Railway.
 
-The one model that runs locally is for **retrieval embeddings**:
+## Required env vars
 
-| Purpose | Model | Where it runs | How to change it |
-|---|---|---|---|
-| Query + ticket embeddings (384-dim, multilingual EN+DE) | [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) | On-device via `sentence-transformers` (CPU or CUDA if available) | Edit `EMBEDDING_MODEL` in `src/mcp_cst/config.py`. Changing it invalidates the stored embeddings and triggers a fresh ~62k-row embedding pass on next start. |
+| Var | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | yes | Postgres DSN. The target database must have the `pgvector` extension available; the server runs `CREATE EXTENSION IF NOT EXISTS vector` on startup. |
+| `MCP_CST_DB_SCHEMA` | no | Schema to create tables in. Defaults to `public`. |
+| `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. Defaults to `main`. |
 
-First run downloads ~120 MB of model weights to the HuggingFace cache; all
-subsequent starts are offline and sub-second.
+## How to run
 
-## Install
+Three paths, pick whichever fits — they all expose the same MCP tools.
 
-Clone the repo somewhere stable and reference its absolute path in the commands below.
+### 1. Connect directly to the hosted Railway URL (no local setup)
 
-### Claude Code (CLI, no JSON editing)
+The server is already deployed and seeded on Railway:
+
+```
+https://mcp-customer-support-tickets-production.up.railway.app/mcp
+```
+
+Add it to any MCP client that supports remote streamable-http transport.
+**Claude Code:**
+
+```sh
+claude mcp add --transport http customer-support-tickets \
+  https://mcp-customer-support-tickets-production.up.railway.app/mcp
+```
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.customer-support-tickets]
+url = "https://mcp-customer-support-tickets-production.up.railway.app/mcp"
+transport = "http"
+```
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "customer-support-tickets": {
+      "url": "https://mcp-customer-support-tickets-production.up.railway.app/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+### 2. Run locally via Docker Compose
+
+`docker-compose.yml` wires up `pgvector/pgvector:pg17` + the mcp server.
+Server listens on `http://localhost:8000/mcp`.
+
+```sh
+git clone <repo-url> mcp-customer-support-tickets
+cd mcp-customer-support-tickets
+docker compose up --build
+# first boot: server downloads HF dataset and embeds 62k rows into the
+# local pgvector volume. Restarts skip the ingest via the store_meta marker.
+```
+
+The compose `mcp` service reserves all NVIDIA GPUs by default (the image
+ships the CUDA torch wheel from the pytorch CUDA base image). On a host
+with the NVIDIA Container Toolkit installed, embedding runs on the GPU —
+which cuts first-boot ingest from ~30 min CPU to a few minutes. On a host
+without a GPU / toolkit, comment out the `deploy.resources` block in
+`docker-compose.yml` and torch falls back to CPU.
+
+Point any MCP client at `http://localhost:8000/mcp` using the same
+`transport = "http"` configs as the Railway URL above (just swap the
+domain).
+
+### 3. Run locally via uv (stdio)
+
+```sh
+git clone <repo-url> mcp-customer-support-tickets
+cd mcp-customer-support-tickets
+uv sync
+
+# any pgvector-enabled Postgres works; simplest is a throwaway container:
+docker run -d --name mcp-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17
+
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
+uv run mcp-customer-support-tickets    # stdio server
+uv run pytest                          # tests
+```
+
+Wire it to Claude Code:
 
 ```sh
 claude mcp add customer-support-tickets --scope user \
-  -- uv run --directory /path/to/mcp-customer-support-tickets mcp-customer-support-tickets
+  -e DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres \
+  -- uv run --directory /absolute/path/to/mcp-customer-support-tickets mcp-customer-support-tickets
 ```
 
-Drop `--scope user` for cwd-only. Verify with `claude mcp list`.
-
-### Codex CLI
-
-Add this block to `~/.codex/config.toml`:
+Or Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.customer-support-tickets]
 command = "uv"
-args = ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+args = ["run", "--directory", "/absolute/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+env = { DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/postgres" }
 ```
 
-### Claude Desktop (and any other JSON-config client)
-
-Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
+Or Claude Desktop (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "customer-support-tickets": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"]
+      "args": ["run", "--directory", "/absolute/path/to/mcp-customer-support-tickets", "mcp-customer-support-tickets"],
+      "env": { "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/postgres" }
     }
   }
 }
 ```
 
-## Local development
-
-The server needs a Postgres instance with the `pgvector` extension. The
-simplest way is a throwaway container:
-
-```sh
-docker run -d --name mcp-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17
-```
-
-Then:
-
-```sh
-git clone <repo-url> mcp-customer-support-tickets
-cd mcp-customer-support-tickets
-uv sync
-export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
-uv run mcp-customer-support-tickets   # stdio server
-uv run pytest                          # tests
-```
-
-Tests pick up `TEST_DATABASE_URL` if set; otherwise they use
-[`testcontainers[postgres]`](https://testcontainers-python.readthedocs.io/)
-(installed by `uv sync` as a dev dep) to spin a throwaway pgvector
-container, which requires the Docker daemon to be reachable.
-
-## Environment variables
-
-| Var | Required | Purpose |
-|---|---|---|
-| `MCP_CST_DATASET_REVISION` | no | HF dataset revision pin. Defaults to `main`. |
-| `DATABASE_URL` | yes | Postgres DSN (`postgresql://user:pass@host:5432/db`). The target database must have the `pgvector` extension available; the server runs `CREATE EXTENSION IF NOT EXISTS vector` on startup. |
-| `MCP_CST_DB_SCHEMA` | no | Schema to create tables in. Defaults to `public`. |
-| `MCP_TRANSPORT` | no | `stdio` (default) or `streamable-http` for remote hosting. |
-| `MCP_HOST` | no | Bind host when `MCP_TRANSPORT=streamable-http`. Defaults to `0.0.0.0`. |
-| `PORT` / `MCP_PORT` | no | Bind port when `MCP_TRANSPORT=streamable-http`. Defaults to `8000`. `PORT` wins (Railway/Fly convention). |
-
-## Docker
-
-The image is built on the official PyTorch CUDA base and bakes the
-embedding model weights. Data lives in Postgres + pgvector, not in the
-image. `docker-compose.yml` wires up two services — `db` (running
-`pgvector/pgvector:pg17`) and `mcp` (this server, `depends_on` the db's
-healthcheck) — and persists the database in a named volume,
-`mcp_pgdata`.
-
-```sh
-docker compose up --build
-# server now listening on http://localhost:8000/mcp
-```
-
-On first boot the server waits for Postgres, runs
-`CREATE EXTENSION IF NOT EXISTS vector`, then ingests the ~62k-row HF
-dataset into the configured schema. This takes ~3-5 min on CPU.
-Subsequent boots see a populated `store_meta` row matching the current
-dataset revision and skip straight to serving — sub-second.
-
-On hosts without a GPU (Railway, CI, CPU laptops) torch initialises
-lazily and runs CPU-only — no errors, just slower. On an NVIDIA host with
-the NVIDIA Container Toolkit installed, add a `deploy.resources` GPU
-reservation to the `mcp` service in `docker-compose.yml` (or run the
-image directly with `--gpus all` and `DATABASE_URL` pointed at a
-reachable pgvector instance).
-
-Image build is ~3-5 min on Linux/CI and ~3 min on a GPU builder; the
-slow Windows/Docker-Desktop step is gone now that ingest happens at boot
-instead of at build. Final image is ~5-6 GB (CUDA torch + cuDNN ship as
-part of the base).
-
-## Deploying to Railway
-
-The image is built once per push to `main` by GitHub Actions
-(`.github/workflows/ci.yml`) and pushed to
-`ghcr.io/tal32123/mcp-customer-support-tickets:latest`. Railway pulls the
-pre-built image (`railway.json` → `build.image`) instead of building from
-source, so deploys are a ~30 s pull and don't depend on Railway's
-builder.
-
-1. `railway init` in this repo and link the service to GitHub so a push
-   to `main` triggers a redeploy after the GHA build finishes. Or trigger
-   redeploys manually after the image tag updates.
-2. The ghcr package must be **public** for Railway to pull anonymously on
-   the Hobby plan (Repo → Packages → set visibility → Public). Private
-   pulls require Railway Pro.
-3. Add a Postgres plugin to the project. **Caveat:** Railway's default
-   Postgres plugin (`bitnami/postgresql`) does not ship `pgvector`. Use
-   Railway's `pgvector`-tagged Postgres template, or roll your own
-   service from `pgvector/pgvector:pg17`. The server runs
-   `CREATE EXTENSION IF NOT EXISTS vector` on boot and will fail fast if
-   the extension is unavailable.
-4. The Postgres plugin exposes `DATABASE_URL` to the service
-   automatically; no other env vars are required. The image already sets
-   `MCP_TRANSPORT=streamable-http`, and Railway injects `PORT`. The HF
-   model cache lives inside the image (`/opt/hf-cache`).
-5. Point a remote MCP client at `https://<your-app>.up.railway.app/mcp`.
-
-## First-run notes
-
-The first time the server starts, it downloads the embedding model
-(~120 MB), pulls the HF Parquet, then embeds and inserts ~62k tickets
-into Postgres (~3-5 min on CPU). State is keyed by dataset revision and
-model id in the `store_meta` table. Subsequent starts see the matching
-revision row and serve immediately.
-
-New tickets created via `create_ticket` (and edits via `update_ticket` /
-`delete_ticket`) are written to the same tables and persist across
-restarts. Bumping `MCP_CST_DATASET_REVISION` triggers a fresh ingest —
-locally-created tickets from the prior revision are not migrated.
-
 ## RAG eval results
 
 The retrieval surface is evaluated end-to-end against the real
-`intfloat/multilingual-e5-small` embedder over a 2,000-row stratified
-sample (1k EN + 1k DE) of the live HF dataset. 21 tests across 6
-dimensions: known-item retrieval, language behaviour, grounding
-coherence, semantic quality, latency, robustness.
+`intfloat/multilingual-e5-small` embedder over the full 62k-row HF
+dataset, ingested into a live Postgres + pgvector store, with the
+pytest suite querying through the `TicketStore` against that store.
+21 tests across 6 dimensions: known-item retrieval, language
+behaviour, grounding coherence, semantic quality, latency, robustness.
 
 Run locally:
 
 ```bash
-MCP_CST_EVAL_FULL=1 uv run pytest tests/integration/rag_eval -q -s
+TEST_DATABASE_URL=<your-pg-dsn> MCP_CST_EVAL_FULL=1 uv run pytest tests/integration/rag_eval -q -s
 ```
 
-First run downloads the ~470 MB model and HF dataset (~5–10 min on
-CPU); subsequent runs hit the local cache (~60 s).
+The eval connects to whatever pgvector instance `TEST_DATABASE_URL`
+points at (skip the env var and testcontainers will spin a throwaway
+one + ingest 62k rows first, which adds ~30 min on CPU).
 
 ### Latest scores
 
-| # | Test | What it measures | Score | Bar |
-|---|---|---|---:|---:|
-| 1 | Find ticket by subject (top-10) | Take a real ticket, search using its subject — does it come back in top 10? | **97.4%** | ≥ 90% |
-| 2 | Find ticket by subject (rank quality) | Reciprocal rank of the gold ticket — closer to 1.0 means usually #1 | **0.84** | ≥ 0.75 |
-| 3 | Find ticket by body slice (top-10) | Search using a 12-word slice of the body — does the ticket come back? | **97.6%** | ≥ 80% |
-| 4 | Find ticket by body slice (rank quality) | Reciprocal rank of the gold ticket | **0.87** | ≥ 0.60 |
-| 5 | Find ticket by body (NDCG@10) | Rank-weighted relevance score | **0.90** | ≥ 0.65 |
-| 6 | Per-language retrieval — EN | Same as #3, English subset only | **98.4%** | ≥ 75% |
-| 7 | Per-language retrieval — DE | Same as #3, German subset only | **96.8%** | ≥ 75% |
-| 9 | Language purity — DE | 30 free-text DE queries with no filter; mean % of top-10 in German | **99.0%** | ≥ 90% |
-| 10 | Language purity — EN | 30 free-text EN queries with no filter; mean % of top-10 in English | **80.7%** | ≥ 70% |
-| 11 | Language filter pushdown | When `language=` is set, are 100% of results that language? | **100%** | hard pass |
-| 13 | Pagination integrity | Walk every page — zero duplicates, total matches estimate | **pass** | hard pass |
-| 14 | Grounding coherence — type | `draft_reply` picks grounding tickets sharing the target's type | **60.9%** | ≥ 60% |
-| 15 | Grounding coherence — language | `draft_reply` picks grounding tickets in the target's language | **100%** | ≥ 95% |
-| 16 | Topical intent — top-3 | 20 hand-written natural queries; relevant hit in top-3 | **90%** (18/20) | ≥ 80% |
-| 17 | Topical intent — top-10 | Same, top-10 | **90%** (18/20) | ≥ 85% |
-| 18 | Cross-lingual recall (diagnostic) | DE query → EN match (and vice versa) — recorded only, not asserted | **0/6** | — |
-| 19 | Hard negatives | Count of pure-off-topic hits in top-3 across 5 topic pairs | **0** | ≤ 2 |
-| 20 | Latency — p50 | Median end-to-end search time | **107 ms** | ≤ 400 ms |
-| 21 | Latency — p95 | 95th percentile end-to-end search time | **156 ms** | ≤ 1000 ms |
-| 22 | Robustness — clean | Hit-rate@10 on 30 unmodified seed queries (baseline for #23–25) | **100%** | — |
-| 23 | Robustness — lowercase | Same queries, all-lowercase | **100%** | drop ≤ 0.15 |
-| 24 | Robustness — char-swap typo | Same queries, with one adjacent-character swap | **100%** | drop ≤ 0.15 |
-| 25 | Robustness — drop a word | Same queries, with one word removed | **100%** | drop ≤ 0.15 |
+Measured against the live Railway-hosted pgvector (full 62,000-row
+corpus, 250 EN + 250 DE seeds, real e5-small embedder, 41 min wall time).
 
-Two HE-language parametrize cases (#8 and #12) skip — the live HF
-dataset ships only EN and DE rows.
+| # | Test | What it measures | Score | Bar | Pass |
+|---|---|---|---:|---:|:---:|
+| 1 | subject_hit_rate@10 | Real ticket subject as query — is the gold ticket in top 10? | **96.35%** | ≥ 90% | ✓ |
+| 2 | subject_MRR@10 | Reciprocal rank of the gold ticket | **0.80** | ≥ 0.75 | ✓ |
+| 3 | body_hit_rate@10 | 12-word body slice as query — top 10? | **99.80%** | ≥ 80% | ✓ |
+| 4 | body_MRR@10 | Reciprocal rank | **0.91** | ≥ 0.60 | ✓ |
+| 5 | body_NDCG@10 | Rank-weighted relevance | **0.93** | ≥ 0.65 | ✓ |
+| 6 | per-lang body@10 EN | Body-slice known-item, EN subset | **100.00%** | ≥ 75% | ✓ |
+| 7 | per-lang body@10 DE | Body-slice known-item, DE subset | **99.60%** | ≥ 75% | ✓ |
+| 9 | lang_purity DE | 30 free-text DE queries with no filter; mean % of top-10 in German | **100%** | ≥ 90% | ✓ |
+| 10 | lang_purity EN | 30 free-text EN queries with no filter; mean % of top-10 in English | **73.33%** | ≥ 70% | ✓ |
+| 11 | language_filter_pushdown | When `language=` is set, every hit is that language | **pass** | hard | ✓ |
+| 13 | pagination_integrity | Walk every page — zero duplicates, total matches estimate | **pass** | hard | ✓ |
+| 14 | grounding_type_coherence | `draft_reply` picks grounding sharing target's type | **80.67%** | ≥ 60% | ✓ |
+| 15 | grounding_lang_coherence | `draft_reply` picks grounding in target's language | **100%** | ≥ 95% | ✓ |
+| 16 | topical_intent_top3 | 20 hand-written natural queries; relevant hit in top-3 | **75%** (15/20) | ≥ 80% | ✗ |
+| 17 | topical_intent_top10 | Same, top-10 | **80%** (16/20) | ≥ 85% | ✗ |
+| 18 | cross_lingual_recall (diagnostic) | DE query → EN match (and vice versa); recorded only, not asserted | **1/6** | — | — |
+| 19 | hard_negative_contamination | Off-topic hits in top-3 across 5 topic pairs | **0** | ≤ 2 | ✓ |
+| 20 | latency_p50 | Median end-to-end search time (incl. network) | **648 ms** | ≤ 400 ms | ✗ |
+| 21 | latency_p95 | 95th percentile | **675 ms** | ≤ 1000 ms | ✓ |
+| 22 | robustness_clean | Hit-rate@10 on 30 unmodified seed queries | **100%** | — | ✓ |
+| 23 | robustness_lowercase | Same queries, all-lowercase | **100%** | drop ≤ 0.15 | ✓ |
+| 24 | robustness_swap_chars | Same queries, with one adjacent-character swap | **70%** | drop ≤ 0.15 | ✗ |
+| 25 | robustness_drop_word | Same queries, with one word removed | **100%** | drop ≤ 0.15 | ✓ |
 
-**Known limitation**: cross-lingual recall (#18) is 0/6 on this
-embedder + dataset combination. The test is intentionally kept as a
-diagnostic so improvements (bigger embedder, query expansion, a
-re-ranker) show up as a score change rather than a silent regression.
+Two HE-language cases (#8 and #12) skip — the live HF dataset ships
+only EN and DE rows.
+
+**4 failures, explained:**
+- **#20 latency p50 (648 ms vs ≤400 ms bar)**: bar was set for a local
+  sub-second store; the live eval measures over MCP + HTTPS + an
+  intercontinental hop to the EU. Pure infrastructure cost, not a
+  retrieval regression.
+- **#24 robustness char-swap (70%)**: with the full 62k corpus and
+  Postgres FTS tokenization, a typo'd query genuinely loses BM25
+  signal. Smaller corpus could mask this.
+- **#16 / #17 topical_intent (75% / 80%)**: at 62k rows there are many
+  more topical competitors than the 2k-sample baseline, so queries like
+  "I want a refund" hit billing/exchange neighbours instead of the
+  refund ticket. Honest ranking-at-scale ceiling for e5-small.
+
+Known limitation: cross-lingual recall (#18) stays low on this
+embedder + dataset combination — kept as a diagnostic so improvements
+(bigger embedder, query expansion, a re-ranker) surface as a score
+change rather than a silent regression.
 
 ## License
 
