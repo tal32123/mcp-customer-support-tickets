@@ -182,7 +182,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">In production</span></div>
-    <p>A live ticket source with real time ingest into both an&nbsp;OLTP and OLAP database.&nbsp;This way we can use postgres for CRUD and ClickHouse for analytical flows; Tenant-partitioned indices for finding things properly per tenant; cross-encoder reranker so we have better rankings for the tickets that most correctly match our queries;&nbsp; larger multilingual embedder; PII redaction at ingest; Evals on draft reply tool results; signed images, CVE gating. We can scale to more servers if needed, and we can use a scalable managed db provider in order to scale the database. More fully featured tools such as a text to sql. However, these will need more guardrails.</p>
+    <p><strong>Infrastructure:</strong> Live ticket ingest into OLTP (Postgres for CRUD) and OLAP (ClickHouse for analytics); tenant-partitioned indices per tenant for faster, isolated queries; managed database scaling. <strong>Data safety:</strong> PII redaction at ingest, signed images, CVE gating. <strong>Retrieval quality:</strong> Cross-encoder reranker for better ranking, larger multilingual embedder. <strong>Evaluation:</strong> Evals on draft reply results to measure reply quality. <strong>Additional tools:</strong> Text-to-SQL for direct queries — these require input validation and guardrails to prevent injection and hallucinated queries.</p>
   </section>
 
   <section>
