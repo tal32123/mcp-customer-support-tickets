@@ -160,12 +160,12 @@
 <header class="hero">
   <div class="wordmark">mcp-customer-support-tickets</div>
   <h1>MCP server for a 62k-ticket support corpus<span class="dot">.</span></h1>
-  <div class="meta"><span class="k">Author</span>Tal Charnes <span class="k">Stack</span>Python &middot; FastMCP &middot; Postgres + pgvector <span class="k">Dataset</span>Tobi-Bueck/customer-support-tickets &middot; ~62k &middot; EN+DE <span class="k">Transport</span>stdio + streamable-http &middot; local or Railway</div>
+  <div class="meta"><span class="k">Author</span>Tal Charnes <span class="k">Stack</span>Python &middot; FastMCP &middot; Postgres + pgvector <span class="k">Dataset</span>Tobi-Bueck/customer-support-tickets &middot; ~62k &middot; EN+DE <span class="k">Transport</span>stdio (local) or streamable-http (Railway)</div>
 </header>
 
 <figure class="diagram">
   <div class="frame"><img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running Postgres FTS plus pgvector kNN fused by Reciprocal Rank Fusion, backed by Postgres + pgvector" /></div>
-  <figcaption>One Python process backed by Postgres. Postgres keyword search&nbsp;and pgvector kNN (HNSW) run in parallel; <strong style="color: #ed1f77; font-weight: 600;">Reciprocal Rank Fusion</strong> merges by rank position and returns a default top 10 (caller-tunable, hard cap 50) with stable <code>ticket://{id}</code> citations.</figcaption>
+  <figcaption></figcaption>
 </figure>
 
 <div class="body">
