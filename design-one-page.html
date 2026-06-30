@@ -91,10 +91,10 @@
   figure.diagram .frame { max-width: 360px; margin: 0 auto; padding: 4px 8px 2px; }
   figure.diagram figcaption {
     margin-top: 5px;
-    padding-left: 4px;
     font-size: 7.8pt;
     line-height: 1.4;
     color: var(--muted);
+    text-align: center;
   }
   figure.diagram figcaption code {
     background: transparent;
@@ -165,7 +165,7 @@
 
 <figure class="diagram">
   <div class="frame"><img src="diagram.svg" alt="Hybrid retrieval architecture: client over stdio JSON-RPC to MCP server running Postgres FTS plus pgvector kNN fused by Reciprocal Rank Fusion, backed by Postgres + pgvector" /></div>
-  <figcaption></figcaption>
+  <figcaption>MCP server implements hybrid search with RRF fusion of full-text (Postgres FTS) and semantic (pgvector) results.</figcaption>
 </figure>
 
 <div class="body">
