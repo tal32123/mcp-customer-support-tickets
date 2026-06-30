@@ -427,7 +427,7 @@
       <div class="meta-strip">
         <span><strong>Author</strong> Tal</span>
         <span><strong>Dataset</strong> <a href="https://huggingface.co/datasets/Tobi-Bueck/customer-support-tickets">Tobi-Bueck/customer-support-tickets</a></span>
-        <span><strong>Transport</strong> stdio</span>
+        <span><strong>Transport</strong> stdio (local) &middot; streamable-http (live Railway)</span>
         <span><strong>License (server)</strong> MIT</span>
       </div>
     </header>
@@ -457,7 +457,7 @@ flowchart LR
     class U,C,HF,E ext;
     class S,L us;
 </pre>
-        <div class="caption">Local by default. The server runs as a subprocess of the LLM client and talks to a local Postgres (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>); nothing leaves the laptop except the one-time dataset download and the one-time embedding-model download. First boot waits for Postgres, then ingests once; later boots reuse rows via a <code>store_meta</code> revision marker.</div>
+        <div class="caption">Two run shapes. <strong>Local</strong>: the server runs as a subprocess of the LLM client (stdio MCP) and talks to a local Postgres (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>); nothing leaves the laptop except the one-time dataset download and the one-time embedding-model download. <strong>Hosted</strong>: the same image lives on GHCR; Railway pulls it and exposes the same MCP tools over streamable-http alongside a Railway pgvector add-on. First boot waits for Postgres, ingests once; later boots reuse rows via a <code>store_meta.ingest_complete</code> marker.</div>
       </div>
     </section>
 
@@ -579,7 +579,7 @@ sequenceDiagram
         <tr><td>Cross-encoder reranking</td><td>Add behind a flag later. Marginal gain for an LLM consumer; extra latency and model download now.</td></tr>
         <tr><td>Other prompts (<code>triage_ticket</code>, <code>summarize_trends</code>)</td><td>Out of scope.</td></tr>
         <tr><td>PII redaction</td><td>Deferred per direction; dataset is synthetic-feeling.</td></tr>
-        <tr><td>Remote HTTP + OAuth</td><td>Local stdio only. Remote adds an ops surface.</td></tr>
+        <tr><td>OAuth on the remote transport</td><td>Streamable-http is exposed on Railway, but auth is left to the deployment surface; in-server OAuth is deferred to a real multi-user rollout.</td></tr>
         <tr><td>Eval harness, exports, telemetry</td><td>Not part of the core loop.</td></tr>
       </table>
     </section>
@@ -593,7 +593,7 @@ sequenceDiagram
         <tr><td>Single store</td><td>Postgres 17 + <code>pgvector</code> extension (compose service <code>db</code>, image <code>pgvector/pgvector:pg17</code>)</td><td>Holds rows, a <code>tsvector</code> GENERATED column with a GIN index for FTS, and a <code>vector(384)</code> column with an HNSW cosine index &mdash; one boring SQL store the team already knows how to back up, observe, and scale.</td></tr>
         <tr><td>Aggregations &amp; filters</td><td>Plain SQL <code>GROUP BY</code> in Postgres</td><td>Counts and filters live with the data; sub-millisecond at 62k rows with a B-tree on the group key.</td></tr>
         <tr><td>Embedding model</td><td><code>intfloat/multilingual-e5-small</code> (384-dim)</td><td>Free, local, multilingual (handles EN <em>and</em> DE).</td></tr>
-        <tr><td>Transport</td><td>stdio</td><td>Default for Claude Code / Codex / Claude Desktop. No network, no auth.</td></tr>
+        <tr><td>Transport</td><td>stdio (local) + streamable-http (hosted)</td><td>stdio: default for Claude Code / Codex / Claude Desktop &mdash; no network, no auth. streamable-http: the live Railway deployment serves the same tools to any HTTP-MCP client.</td></tr>
         <tr><td>LLM (for <code>draft_reply</code>)</td><td>None — server only assembles context + scaffold</td><td>The calling MCP client's own LLM writes the reply. No API key required.</td></tr>
       </table>
     </section>

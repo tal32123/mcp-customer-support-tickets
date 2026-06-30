@@ -4,8 +4,6 @@
 <meta charset="utf-8" />
 <title>MCP server for customer support tickets &mdash; Design</title>
 <style>
-  @page { size: A4; margin: 10mm 12mm 9mm; }
-
   :root {
     --magenta:   #ED1F77;
     --ink-blue:  #1F1B5C;
@@ -166,7 +164,7 @@
     <span><span class="k">Author</span>Tal Charnes</span>
     <span><span class="k">Stack</span>Python &middot; FastMCP &middot; Postgres + pgvector</span>
     <span><span class="k">Dataset</span>Tobi-Bueck/customer-support-tickets &middot; ~62k &middot; EN+DE</span>
-    <span><span class="k">Transport</span>stdio &middot; local</span>
+    <span><span class="k">Transport</span>stdio + streamable-http &middot; local or Railway</span>
   </div>
 </header>
 
@@ -193,7 +191,7 @@
 
   <section>
     <div class="sec-head"><span class="sec-num">03</span><span class="sec-title">In production</span></div>
-    <p>Live ticket source with incremental delta-ingest. Streamable HTTP transport with OAuth 2.1 and tenant-partitioned vector indices. A cross-encoder reranker on by default once retrieval feeds real workflows; a larger multilingual embedding model for richer coverage. PII redaction at ingest. An eval harness of 50&ndash;200 golden queries tracking precision@5 per deploy. Traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, and pinned model artifacts. <strong>Next step beyond the current single-Postgres setup:</strong> add <strong>ClickHouse</strong> alongside Postgres for analytical flows in prod &mdash; Postgres stays as OLTP for ticket CRUD and hybrid retrieval, while heavy rollups, time-series, and BI-style aggregates move to ClickHouse where they belong.</p>
+    <p><strong>Today:</strong> a live Railway deployment serves the streamable-http transport off a GHCR image (GHA tests &rarr; builds &rarr; pushes; Railway pulls); the same image runs locally via <code>docker compose</code> with a sibling pgvector container. <strong>Next:</strong> live ticket source with incremental delta-ingest; OAuth 2.1; tenant-partitioned indices; cross-encoder reranker; larger multilingual embedder; PII redaction at ingest; 50&ndash;200-query eval harness on precision@5 per deploy; traces, p95 dashboards, per-tenant rate limits; signed images, CVE gating, pinned model artifacts. <strong>Beyond single-Postgres:</strong> add <strong>ClickHouse</strong> for analytical flows &mdash; Postgres stays as OLTP for ticket CRUD and hybrid retrieval; heavy rollups and BI-style aggregates move to ClickHouse.</p>
   </section>
 
   <section>
@@ -207,11 +205,6 @@
   </section>
 
 </div>
-
-<footer>
-  <span class="brand">mcp-customer-support-tickets</span>
-  <span>Tal Charnes &middot; 2026</span>
-</footer>
 
 </body>
 </html>

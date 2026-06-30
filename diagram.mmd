@@ -31,7 +31,7 @@ flowchart LR
     VK --> RR
   end
 
-  L[("<b>LanceDB</b>")]
+  L[("<b>Postgres + pgvector</b><br/><span style='color:#6B6B7A;font-size:11px;font-weight:400'>tsvector GIN · HNSW cosine</span>")]
 
   C <==>|"<span style='color:#6B6B7A;font-size:11px'>stdio · JSON-RPC</span>"| S
   S <==> L
